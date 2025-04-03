@@ -5,32 +5,27 @@ build-backend = "hatchling.build"
 [project]
 name = "lakehouse-health-analyzer"
 version = "0.1.0"
-description = "A tool to analyze the health of Lakehouse tables (Iceberg, Hudi, Delta Lake)"
-readme = "README.md"
+description = "A tool for analyzing lakehouse table health"
 requires-python = ">=3.8"
-license = "MIT"
-authors = [
-    { name = "Your Name", email = "your.email@example.com" }
-]
 dependencies = [
-    "pyiceberg>=0.5.0",
-    "duckdb>=0.9.0",
-    "streamlit>=1.30.0",
-    "pandas>=2.0.0",
-    "pydantic>=2.0.0",
-    "fastapi>=0.100.0",
-    "uvicorn>=0.23.0",
     "boto3>=1.26.0",
-    "requests>=2.31.0",
+    "duckdb>=0.9.0",
+    "fastapi>=0.100.0",
+    "pandas>=2.0.0",
     "plotly>=5.18.0",
+    "pydantic>=2.0.0",
+    "pyiceberg>=0.5.0",
+    "requests>=2.31.0",
+    "streamlit>=1.30.0",
+    "uvicorn>=0.23.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
     "black>=23.0.0",
     "isort>=5.0.0",
     "mypy>=1.0.0",
+    "pytest>=7.0.0",
 ]
 
 [tool.black]
@@ -41,6 +36,12 @@ target-version = ['py38']
 profile = "black"
 multi_line_output = 3
 
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["analyzers", "catalogs", "visualization", "utils"] 
+packages = ["analyzers", "catalogs", "visualization", "utils"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"] 

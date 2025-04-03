@@ -9,6 +9,7 @@ from analyzers.base import (
     TableMetadataMetrics,
     LiveTableMetrics,
     SnapshotMetrics,
+    PartitionMetrics,
 )
 from catalogs.iceberg import IcebergCatalog
 
@@ -276,38 +277,6 @@ class IcebergAnalyzer(BaseAnalyzer):
             **record
         )
 
-    def get_partition_metrics(self) -> List[Dict[str, Any]]:
-        """Get partition-related metrics including aggregated and per-partition stats."""
-
-        # Referred directly in duckdb_sql
-        pa_partitions = self.table.inspect.partitions()
-
-        # Use DuckDB to analyze partition statistics
-        partition_results = (
-            self.duckdb.sql(
-                """
-            SELECT
-                partition,
-                COUNT(*) as file_count,
-                SUM(record_count) as record_count,
-                SUM(total_data_file_size_in_bytes) as total_size_bytes
-            FROM pa_partitions
-            GROUP BY partition
-        """
-            )
-            .to_df()
-            .to_dict("records")
-        )
-        return [
-            {
-                "partition": partition.get("partition"),
-                "partition_file_count": partition.get("file_count"),
-                "partition_record_count": partition.get("record_count"),
-                "partition_total_size_bytes": partition.get("total_size_bytes"),
-            }
-            for partition in partition_results
-        ]
-
         # def calculate_skewness(values: List[float]) -> float:
         #     if not values:
         #         return 0.0
@@ -372,36 +341,33 @@ class IcebergAnalyzer(BaseAnalyzer):
             for file in files_stats
         ]
 
-    def get_partition_stats(self, database: str, table: str) -> Dict[str, Any]:
+    def get_partition_metrics(self) -> List[PartitionMetrics]:
         """Get detailed partition statistics for an Iceberg table."""
         iceberg_table = self.table
+        pa_partitions = iceberg_table.inspect.partitions()
 
         # Use DuckDB to analyze partition statistics
-        self.duckdb.execute(
-            f"""
-            CREATE TABLE iceberg_files AS 
-            SELECT 
-                partition,
-                COUNT(*) as file_count,
-                SUM(file_size_in_bytes) as total_size_bytes
-            FROM iceberg_scan('{database}.{table}')
-            GROUP BY partition
-        """
-        )
+        part_stats = self.duckdb.sql("""
+        SELECT 
+            partition,
+            file_count as data_file_count,
+            position_delete_file_count + equality_delete_file_count as  delete_file_count,
+            SUM(total_data_file_size_in_bytes) AS total_data_file_size,
+            CASE WHEN file_count > 0 THEN total_data_file_size / file_count ELSE 0 END AS avg_file_size_per_partition,
+        FROM pa_partitions
+        GROUP BY partition, file_count, delete_file_count
+        ORDER BY file_count DESC, avg_file_size_per_partition ASC
+        """).to_df().to_dict("records")
 
-        result = self.duckdb.execute(
-            """
-            SELECT * FROM iceberg_files
-        """
-        ).fetchall()
-
-        files_per_partition = {str(r[0]): r[1] for r in result}
-        partition_sizes_bytes = {str(r[0]): r[2] for r in result}
-
-        return {
-            "files_per_partition": files_per_partition,
-            "partition_sizes_bytes": partition_sizes_bytes,
-        }
+        return [
+            PartitionMetrics(
+                partition=partition.get("partition"),
+                data_file_count=partition.get("data_file_count"),
+                delete_file_count=partition.get("delete_file_count"),
+                total_data_file_size=partition.get("total_data_file_size"),
+                avg_file_size_per_partition=partition.get("avg_file_size_per_partition"),
+            ) for partition in part_stats
+        ]
 
     def find_orphan_files(self, database: str, table: str) -> List[str]:
         """Find orphan files in an Iceberg table."""

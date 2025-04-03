@@ -39,3 +39,4 @@ ENV/
 # TEMPORARY
 tests/*
 *.ipynb
+test_*.py

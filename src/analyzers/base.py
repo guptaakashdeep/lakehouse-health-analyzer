@@ -29,11 +29,13 @@ class SnapshotMetrics(BaseModel):
 class PartitionMetrics(BaseModel):
     """Metrics related to table partitions."""
 
-    # Aggregated metrics
-    partition: Dict
-    partition_file_count: int
-    partition_record_count: int
-    partition_total_size_bytes: int
+    # Partition key-value pairs
+    partition: Dict[str, Any]
+    # File and size metrics
+    data_file_count: int
+    delete_file_count: int
+    total_data_file_size: int
+    avg_file_size_per_partition: float
     # avg_record_count: float
     # max_record_count: int
     # min_record_count: int
@@ -91,13 +93,13 @@ class TableMetadataMetrics(BaseModel):
 class BaseAnalyzer(ABC):
     """Base class for all table format analyzers."""
 
-    # @abstractmethod
-    # def analyze_table(self, database: str, table: str) -> TableHealthMetrics:
-    #     """Analyze a table and return health metrics."""
-    #     pass
+    @abstractmethod
+    def get_snapshot_metrics(self, database: str, table: str) -> SnapshotMetrics:
+        """Get snapshot metrics."""
+        pass
 
     @abstractmethod
-    def get_partition_stats(self, database: str, table: str) -> Dict[str, Any]:
+    def get_partition_metrics(self, database: str, table: str) -> Dict[str, Any]:
         """Get detailed partition statistics."""
         pass
 
