@@ -49,18 +49,40 @@ pip install lakehouse-health-analyzer
 # Add src to Python path
 import sys
 import os
+import sys
+import os
+
+# Add src to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
-from analyzers.iceberg import IcebergAnalyzer
 from visualization.metrics_dashboard import show_dashboard
+from analyzers.iceberg import IcebergAnalyzer
 
-# Analyze using a metadata file
-analyzer = IcebergAnalyzer(metadata_path="/path/to/metadata.json")
-metrics = analyzer.get_table_metrics()
+def get_table_metrics(table_name=None, catalog_name=None, 
+                     use_metadata_file=False, metadata_location=None):
+    """Get metrics for an Iceberg table."""
+    try:
+        # Initialize analyzer based on mode
+        if use_metadata_file:
+            analyzer = IcebergAnalyzer(metadata_path=metadata_location)
+        else:
+            # Not supported at the moment
+            analyzer = IcebergAnalyzer(database="default", table_name=table_name, 
+                                      catalog_name=catalog_name)
+        
+        # Get metrics
+        return analyzer.get_table_metrics()
+    except Exception as e:
+        print(f"Error getting table metrics: {str(e)}")
+        raise e
 
-# Analyze using a catalog
-analyzer = IcebergAnalyzer(database="default", table_name="mytable", catalog_name="glue")
-metrics = analyzer.get_table_metrics()
+# Run the dashboard with a function to get table metrics
+show_dashboard(
+    get_table_metrics=get_table_metrics,
+    available_tables=["example.default.table1", "example.default.table2"],
+    catalog_name="default",
+    use_metadata_file=True  # Default to metadata file mode
+)
 ```
 
 ### Running the Dashboard
