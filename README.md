@@ -2,6 +2,10 @@
 
 A tool to analyze the health of Lakehouse tables (Iceberg, Hudi, Delta Lake) by providing insights into table metadata, partition statistics, and overall table health.
 
+## Demo
+
+![Lakehouse Health Analyzer Demo](docs/resources/Lakehouse-analyzer.gif)
+
 ## Features
 
 - Table metadata analysis
