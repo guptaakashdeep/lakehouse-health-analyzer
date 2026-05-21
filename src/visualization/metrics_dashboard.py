@@ -5,12 +5,20 @@ import streamlit as st
 from visualization.dashboard_utils import (
     display_metrics_with_tabs,
 )
+from visualization.catalog_overview import (
+    build_catalog_overview,
+    display_catalog_overview,
+)
 
 
 def show_dashboard(
     available_tables: List[str] = None,
     get_table_metrics: Callable = None,
+    list_catalog_tables: Callable = None,
     catalog_name: str = None,
+    catalog_namespace: str = None,
+    aws_profile: str = None,
+    aws_region: str = None,
     use_metadata_file: bool = False,
     metadata_location: str = None,
 ):
@@ -23,12 +31,30 @@ def show_dashboard(
             "selected_tables": [],
             "metrics": None,
             "tables_metrics": {},
+            "catalog_overview": None,
+            "catalog_name": catalog_name if catalog_name else "",
+            "catalog_namespace": catalog_namespace if catalog_namespace else "",
+            "aws_profile": aws_profile if aws_profile else "",
+            "aws_region": aws_region if aws_region else "",
             "active_tabs": {},  # Store active tabs for each section
         }
 
     # Initialize active_tabs if it doesn't exist
     if "active_tabs" not in st.session_state.dashboard_state:
         st.session_state.dashboard_state["active_tabs"] = {}
+    st.session_state.dashboard_state.setdefault("catalog_overview", None)
+    st.session_state.dashboard_state.setdefault(
+        "catalog_name", catalog_name if catalog_name else ""
+    )
+    st.session_state.dashboard_state.setdefault(
+        "catalog_namespace", catalog_namespace if catalog_namespace else ""
+    )
+    st.session_state.dashboard_state.setdefault(
+        "aws_profile", aws_profile if aws_profile else ""
+    )
+    st.session_state.dashboard_state.setdefault(
+        "aws_region", aws_region if aws_region else ""
+    )
 
     st.title("Iceberg Table Metadata Metrics Dashboard")
 
@@ -122,95 +148,107 @@ def show_dashboard(
 
     else:
         # Catalog mode with session state
-        if not available_tables:
-            st.warning("No tables available in the catalog")
-            return
-
-        # Allow selecting multiple tables with session state
-        selected_tables = st.multiselect(
-            "Select tables to analyze",
-            available_tables,
-            default=st.session_state.dashboard_state["selected_tables"],
-            key="table_selector",
-            format_func=lambda x: x.split(".")[-1] if "." in x else x,
-            help="You can select multiple tables to analyze",
+        catalog_name = st.text_input(
+            "Catalog Name",
+            value=st.session_state.dashboard_state["catalog_name"],
+            key="catalog_name_input",
+        )
+        catalog_namespace = st.text_input(
+            "Namespace",
+            value=st.session_state.dashboard_state["catalog_namespace"],
+            key="catalog_namespace_input",
+        )
+        aws_profile = st.text_input(
+            "AWS Profile",
+            value=st.session_state.dashboard_state["aws_profile"],
+            key="aws_profile_input",
+        )
+        aws_region = st.text_input(
+            "AWS Region",
+            value=st.session_state.dashboard_state["aws_region"],
+            key="aws_region_input",
         )
 
-        # Update session state
-        st.session_state.dashboard_state["selected_tables"] = selected_tables
-
-        if not selected_tables:
-            st.info("Please select at least one table to analyze")
-            return
+        st.session_state.dashboard_state["catalog_name"] = catalog_name
+        st.session_state.dashboard_state["catalog_namespace"] = catalog_namespace
+        st.session_state.dashboard_state["aws_profile"] = aws_profile
+        st.session_state.dashboard_state["aws_region"] = aws_region
 
         # Add a button to trigger analysis
-        if st.button("Analyze Selected Tables"):
+        if st.button("Load Catalog Overview"):
             # Create a progress bar
             progress_bar = st.progress(0)
             status_text = st.empty()
 
-            # Dictionary to store metrics for selected tables
-            tables_metrics = {}
-
-            # Fetch metrics for each selected table
-            for i, table_name in enumerate(selected_tables):
-                status_text.text(f"Analyzing table: {table_name}")
-                try:
-                    metrics = get_table_metrics(
-                        table_name=table_name,
-                        catalog_name=catalog_name,
-                        use_metadata_file=False,
-                        metadata_location=None,
-                    )
-                    tables_metrics[table_name] = metrics
-                except Exception as e:
-                    import traceback
-
-                    st.error(f"Error analyzing table {table_name}: {str(e)}")
-                    st.error(traceback.format_exc())
-
-                # Update progress
-                progress = (i + 1) / len(selected_tables)
-                progress_bar.progress(progress)
-
-            status_text.text("Analysis complete!")
-
-            if not tables_metrics:
-                st.warning("No metrics available for the selected tables")
+            try:
+                status_text.text("Listing catalog tables...")
+                progress_bar.progress(0.1)
+                table_names = _catalog_table_names(
+                    available_tables=available_tables,
+                    list_catalog_tables=list_catalog_tables,
+                    catalog_name=catalog_name,
+                    catalog_namespace=catalog_namespace,
+                    aws_profile=aws_profile,
+                    aws_region=aws_region,
+                )
+            except Exception as e:
+                progress_bar.empty()
+                status_text.empty()
+                st.warning(f"Unable to list catalog tables: {str(e)}")
                 return
 
-            # Store metrics in session state
-            st.session_state.dashboard_state["tables_metrics"] = tables_metrics
+            if not table_names:
+                progress_bar.empty()
+                status_text.empty()
+                st.warning("No tables available in the catalog")
+                return
 
-            # Create tabs for each table
-            tabs = st.tabs(
-                [
-                    table_name.split(".")[-1] if "." in table_name else table_name
-                    for table_name in tables_metrics.keys()
-                ]
+            status_text.text("Analyzing catalog tables...")
+            progress_bar.progress(0.5)
+            overview = build_catalog_overview(
+                table_names=tuple(table_names),
+                analyze_table=lambda table_name: get_table_metrics(
+                    table_name=table_name,
+                    catalog_name=catalog_name,
+                    use_metadata_file=False,
+                    metadata_location=None,
+                    aws_profile=aws_profile or None,
+                    aws_region=aws_region or None,
+                ),
             )
 
-            # Display metrics for each table in its respective tab
-            for tab, (table_name, metrics) in zip(tabs, tables_metrics.items()):
-                with tab:
-                    display_metrics_with_tabs(metrics)
+            st.session_state.dashboard_state["catalog_overview"] = overview
+            status_text.text("Catalog overview complete!")
+            progress_bar.progress(1.0)
+            time.sleep(1)
+            status_text.empty()
+            progress_bar.empty()
+            display_catalog_overview(overview)
         else:
             # Display cached metrics if available
-            if st.session_state.dashboard_state["tables_metrics"]:
-                tables_metrics = st.session_state.dashboard_state["tables_metrics"]
-                # Create tabs for each table
-                tabs = st.tabs(
-                    [
-                        table_name.split(".")[-1] if "." in table_name else table_name
-                        for table_name in tables_metrics.keys()
-                    ]
+            if st.session_state.dashboard_state["catalog_overview"]:
+                display_catalog_overview(
+                    st.session_state.dashboard_state["catalog_overview"]
                 )
-
-                # Display metrics for each table in its respective tab
-                for tab, (table_name, metrics) in zip(tabs, tables_metrics.items()):
-                    with tab:
-                        display_metrics_with_tabs(metrics)
 
     # Add dashboard footer
     st.markdown("---")
     st.markdown("*Dashboard powered by Lakehouse Health Analyzer*")
+
+
+def _catalog_table_names(
+    available_tables,
+    list_catalog_tables,
+    catalog_name,
+    catalog_namespace,
+    aws_profile,
+    aws_region,
+):
+    if list_catalog_tables is None:
+        return [] if available_tables is None else available_tables
+    return list_catalog_tables(
+        catalog_name=catalog_name or None,
+        namespace=catalog_namespace or None,
+        aws_profile=aws_profile or None,
+        aws_region=aws_region or None,
+    )

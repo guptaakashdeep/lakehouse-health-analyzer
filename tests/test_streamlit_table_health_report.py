@@ -310,3 +310,58 @@ def test_streamlit_catalog_mode_uses_canonical_report_path(monkeypatch):
         namespace=("sales",),
         table_name="orders",
     )
+
+
+def test_streamlit_catalog_listing_uses_configured_catalog_source(monkeypatch):
+    import streamlit_app
+
+    calls = []
+
+    class FakeCatalog:
+        def list_tables(self, namespace):
+            calls.append(("list_tables", namespace))
+            return (
+                ("sales", "orders"),
+                ("sales", "customers"),
+            )
+
+    def fake_load_catalog(catalog_name, **properties):
+        calls.append(("load_catalog", catalog_name, properties))
+        return FakeCatalog()
+
+    monkeypatch.setattr(streamlit_app, "load_catalog", fake_load_catalog)
+
+    table_names = streamlit_app.get_catalog_tables(
+        catalog_name="analytics",
+        namespace="sales",
+        aws_profile="dev",
+        aws_region="us-east-1",
+    )
+
+    assert table_names == ["sales.orders", "sales.customers"]
+    assert calls == [
+        (
+            "load_catalog",
+            "analytics",
+            {
+                "type": "glue",
+                "glue.profile-name": "dev",
+                "glue.region": "us-east-1",
+            },
+        ),
+        ("list_tables", "sales"),
+    ]
+
+
+def test_streamlit_catalog_listing_rejects_hierarchical_glue_namespace():
+    import streamlit_app
+
+    try:
+        streamlit_app.get_catalog_tables(
+            catalog_name="analytics",
+            namespace="sales.curated",
+        )
+    except ValueError as exc:
+        assert "single namespace component" in str(exc)
+    else:
+        raise AssertionError("Expected hierarchical Glue namespace to be rejected")
