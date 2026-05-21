@@ -1,20 +1,26 @@
 from unittest.mock import patch
 
 from analysis.iceberg import analyze_iceberg_metadata_file
+from analysis.report import CalculationWarning
+from configuration import AnalyzerConfiguration, MetadataFileSourceConfiguration
 
 
 class FakeInspect:
-    def __init__(self, files):
+    def __init__(self, files, partitions=()):
         self._files = files
+        self._partitions = partitions
 
     def files(self):
         return self._files
 
+    def partitions(self):
+        return self._partitions
+
 
 class FakeIcebergTable:
-    def __init__(self, name, files):
+    def __init__(self, name, files, partitions=()):
         self._name = name
-        self.inspect = FakeInspect(files)
+        self.inspect = FakeInspect(files, partitions)
 
     def name(self):
         return self._name
@@ -48,7 +54,35 @@ def test_metadata_file_analysis_produces_canonical_table_health_report():
         "data_file_size_bytes",
         "data_file_count",
     )
-    assert report.calculation_warnings == ()
+    assert report.health_metric("estimated_current_record_count").value is None
+    assert report.calculation_warnings == (
+        CalculationWarning(
+            metric_key="estimated_current_record_count",
+            message=(
+                "Delete files are present, so current records cannot be "
+                "calculated exactly from metadata-only file counts."
+            ),
+        ),
+    )
+
+
+def test_metadata_file_analysis_accepts_centralized_configuration():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [{"content": 0, "file_size_in_bytes": 64, "record_count": 10}],
+    )
+    config = AnalyzerConfiguration(
+        table_source=MetadataFileSourceConfiguration(
+            location="/tmp/orders.metadata.json"
+        )
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file(config)
+
+    assert report.table_source.kind == "metadata_file"
+    assert report.table_source.location == "/tmp/orders.metadata.json"
+    assert report.health_metric("data_file_count").value == 1
 
 
 def test_unavailable_health_metric_values_are_unknown_with_warnings():
@@ -89,4 +123,249 @@ def test_partially_unavailable_file_sizes_keep_totals_unknown():
     assert {warning.metric_key for warning in report.calculation_warnings} == {
         "total_file_size_bytes",
         "data_file_size_bytes",
+        "estimated_current_record_count",
     }
+
+
+def test_partitioned_metadata_file_analysis_reports_balanced_partition_health():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [
+            {"content": 0, "file_size_in_bytes": 120, "record_count": 10},
+            {"content": 0, "file_size_in_bytes": 80, "record_count": 5},
+        ],
+        partitions=[
+            {
+                "partition": {"region": "east"},
+                "file_count": 2,
+                "position_delete_file_count": 1,
+                "equality_delete_file_count": 0,
+                "total_data_file_size_in_bytes": 200,
+            },
+            {
+                "partition": {"region": "west"},
+                "file_count": 2,
+                "position_delete_file_count": 0,
+                "equality_delete_file_count": 1,
+                "total_data_file_size_in_bytes": 200,
+            },
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    assert report.health_metric("partition_count").value == 2
+    assert report.health_metric("average_data_files_per_partition").value == 2
+    assert report.health_metric("max_data_files_per_partition").value == 2
+    assert report.health_metric("partition_size_skewness").value == 0
+
+    assert len(report.partition_metrics) == 2
+    assert report.partition_metrics[0].partition == {"region": "east"}
+    assert report.partition_metrics[0].data_file_count == 2
+    assert report.partition_metrics[0].delete_file_count == 1
+    assert report.partition_metrics[0].total_data_file_size_bytes == 200
+    assert report.partition_metrics[0].average_data_file_size_bytes == 100
+
+
+def test_partitioned_metadata_file_analysis_reports_skewed_partition_distribution():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [{"content": 0, "file_size_in_bytes": 1, "record_count": 1}],
+        partitions=[
+            {
+                "partition": {"region": "east"},
+                "file_count": 1,
+                "total_data_file_size_in_bytes": 100,
+            },
+            {
+                "partition": {"region": "west"},
+                "file_count": 10,
+                "total_data_file_size_in_bytes": 1000,
+            },
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    assert report.health_metric("min_partition_data_file_size_bytes").value == 100
+    assert report.health_metric("max_partition_data_file_size_bytes").value == 1000
+    assert report.health_metric("average_partition_data_file_size_bytes").value == 550
+    assert report.health_metric("partition_size_skewness").value > 0.8
+
+
+def test_empty_partition_metadata_reports_zero_partition_totals():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [],
+        partitions=[],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    assert report.health_metric("partition_count").value == 0
+    assert report.health_metric("partition_total_data_file_size_bytes").value == 0
+    assert report.health_metric("average_data_files_per_partition").value is None
+    assert report.health_metric("partition_size_skewness").value == 0
+    assert report.partition_metrics == ()
+
+
+def test_high_file_count_partition_pressure_is_reported_with_evidence():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [{"content": 0, "file_size_in_bytes": 1, "record_count": 1}],
+        partitions=[
+            {
+                "partition": {"date": "2026-05-20"},
+                "file_count": 25,
+                "total_data_file_size_in_bytes": 250,
+            },
+            {
+                "partition": {"date": "2026-05-21"},
+                "file_count": 125,
+                "total_data_file_size_in_bytes": 1250,
+            },
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    assert report.health_metric("high_file_count_partition_count").value == 1
+    assert report.health_metric("high_file_count_partition_threshold").value == 100
+    assert report.health_metric("max_data_files_per_partition").value == 125
+    assert report.partition_metrics[1].partition == {"date": "2026-05-21"}
+    assert report.partition_metrics[1].data_file_count == 125
+
+
+def test_non_partitioned_metadata_without_partition_column_analyzes_successfully():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [{"content": 0, "file_size_in_bytes": 128, "record_count": 10}],
+        partitions=[
+            {
+                "file_count": 1,
+                "position_delete_file_count": 0,
+                "equality_delete_file_count": 0,
+                "total_data_file_size_in_bytes": 128,
+            }
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    assert report.health_metric("partition_count").value == 1
+    assert report.partition_metrics[0].partition == {}
+    assert report.partition_metrics[0].data_file_count == 1
+    assert report.partition_metrics[0].total_data_file_size_bytes == 128
+
+
+def test_data_only_files_report_exact_estimated_current_record_count():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [
+            {"content": 0, "file_size_in_bytes": 120, "record_count": 10},
+            {"content": 0, "file_size_in_bytes": 80, "record_count": 5},
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    assert report.health_metric("data_file_record_count").value == 15
+    assert report.health_metric("delete_file_size_bytes").value == 0
+    assert report.health_metric("position_delete_record_count").value == 0
+    assert report.health_metric("equality_delete_record_count").value == 0
+    assert report.health_metric("estimated_current_record_count").value == 15
+
+
+def test_incomplete_partition_sizes_make_skewness_unknown_with_warning():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [{"content": 0, "file_size_in_bytes": 1, "record_count": 1}],
+        partitions=[
+            {
+                "partition": {"region": "east"},
+                "file_count": 1,
+                "total_data_file_size_in_bytes": 100,
+            },
+            {
+                "partition": {"region": "west"},
+                "file_count": 1,
+                "total_data_file_size_in_bytes": None,
+            },
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    assert report.health_metric("partition_size_skewness").value is None
+    assert any(
+        warning.metric_key == "partition_size_skewness"
+        for warning in report.calculation_warnings
+    )
+
+
+def test_position_delete_files_make_estimated_current_record_count_unknown():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [
+            {"content": 0, "file_size_in_bytes": 120, "record_count": 10},
+            {"content": 1, "file_size_in_bytes": 20, "record_count": 2},
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    assert report.health_metric("data_file_record_count").value == 10
+    assert report.health_metric("position_delete_record_count").value == 2
+    assert report.health_metric("equality_delete_record_count").value == 0
+    assert report.health_metric("estimated_current_record_count").value is None
+    assert any(
+        warning.metric_key == "estimated_current_record_count"
+        for warning in report.calculation_warnings
+    )
+
+
+def test_equality_delete_files_are_counted_in_delete_file_metrics():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [
+            {"content": 0, "file_size_in_bytes": 200, "record_count": 20},
+            {"content": 2, "file_size_in_bytes": 40, "record_count": 5},
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    assert report.health_metric("delete_file_count").value == 1
+    assert report.health_metric("delete_file_size_bytes").value == 40
+    assert report.health_metric("position_delete_record_count").value == 0
+    assert report.health_metric("equality_delete_record_count").value == 5
+
+
+def test_mixed_delete_files_report_separate_delete_record_counts():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [
+            {"content": 0, "file_size_in_bytes": 100, "record_count": 10},
+            {"content": 1, "file_size_in_bytes": 20, "record_count": 2},
+            {"content": 2, "file_size_in_bytes": 30, "record_count": 3},
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    assert report.health_metric("data_file_record_count").value == 10
+    assert report.health_metric("position_delete_record_count").value == 2
+    assert report.health_metric("equality_delete_record_count").value == 3
+    assert report.health_metric("delete_file_count").value == 2
+    assert report.health_metric("delete_file_size_bytes").value == 50
+    assert report.health_metric("estimated_current_record_count").value is None

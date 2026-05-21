@@ -6,6 +6,7 @@ except ModuleNotFoundError:
     st = None
 
 from analysis.report import TableHealthReport
+from visualization.components.partition_metrics import display_partition_metrics
 
 
 def display_table_health_report(report: TableHealthReport) -> None:
@@ -22,6 +23,9 @@ def display_table_health_report(report: TableHealthReport) -> None:
     st.subheader("Display Statistics")
     for statistic in report.display_statistics:
         st.metric(statistic.label, _format_display_value(statistic.value))
+
+    if report.partition_metrics:
+        display_partition_metrics(report)
 
     if report.calculation_warnings:
         st.subheader("Calculation Warnings")

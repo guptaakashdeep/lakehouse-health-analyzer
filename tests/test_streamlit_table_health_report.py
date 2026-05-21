@@ -2,9 +2,11 @@ from analysis.report import (
     CalculationWarning,
     DisplayStatistic,
     HealthMetric,
+    PartitionHealthMetric,
     TableHealthReport,
     TableSource,
 )
+from configuration import AnalyzerConfiguration
 from visualization.table_health_report import display_table_health_report
 
 
@@ -25,6 +27,15 @@ class FakeStreamlit:
 
     def warning(self, text):
         self.warnings.append(text)
+
+
+class FakePartitionStreamlit(FakeStreamlit):
+    def __init__(self):
+        super().__init__()
+        self.dataframes = []
+
+    def dataframe(self, value, **kwargs):
+        self.dataframes.append(value)
 
 
 def test_streamlit_report_renderer_consumes_report_values(monkeypatch):
@@ -68,7 +79,62 @@ def test_streamlit_report_renderer_consumes_report_values(monkeypatch):
     assert fake_st.warnings == ["total_file_size_bytes: size is incomplete"]
 
 
-def test_streamlit_metadata_file_mode_uses_canonical_report_path(monkeypatch):
+def test_streamlit_report_renderer_displays_partition_report_values(monkeypatch):
+    fake_st = FakePartitionStreamlit()
+    monkeypatch.setattr("visualization.table_health_report.st", fake_st)
+    monkeypatch.setattr("visualization.components.partition_metrics.st", fake_st)
+
+    report = TableHealthReport(
+        table_name="warehouse.sales.orders",
+        table_source=TableSource(
+            kind="metadata_file", location="/tmp/orders.metadata.json"
+        ),
+        health_metrics=(
+            HealthMetric(
+                key="partition_count",
+                label="Partition Count",
+                value=2,
+                unit="partitions",
+                source="iceberg.inspect.partitions",
+            ),
+            HealthMetric(
+                key="high_file_count_partition_count",
+                label="High File Count Partition Count",
+                value=1,
+                unit="partitions",
+                source="iceberg.inspect.partitions",
+            ),
+        ),
+        display_statistics=(),
+        partition_metrics=(
+            PartitionHealthMetric(
+                partition={"region": "east"},
+                data_file_count=4,
+                delete_file_count=1,
+                total_data_file_size_bytes=400,
+                average_data_file_size_bytes=100,
+                source="iceberg.inspect.partitions",
+            ),
+        ),
+    )
+
+    display_table_health_report(report)
+
+    assert ("Partition Count", "2 partitions") in fake_st.metrics
+    assert ("High File Count Partition Count", "1 partitions") in fake_st.metrics
+    assert fake_st.dataframes
+    assert fake_st.dataframes[0].to_dict("records") == [
+        {
+            "region": "east",
+            "data_file_count": 4,
+            "delete_file_count": 1,
+            "total_data_file_size_bytes": 400,
+            "average_data_file_size_bytes": 100,
+        }
+    ]
+
+
+def test_streamlit_metadata_file_mode_uses_centralized_configuration(monkeypatch):
     import streamlit_app
 
     report = TableHealthReport(
@@ -82,8 +148,8 @@ def test_streamlit_metadata_file_mode_uses_canonical_report_path(monkeypatch):
 
     calls = []
 
-    def fake_analyze(metadata_location):
-        calls.append(metadata_location)
+    def fake_analyze(config):
+        calls.append(config)
         return report
 
     monkeypatch.setattr(streamlit_app, "analyze_iceberg_metadata_file", fake_analyze)
@@ -94,4 +160,6 @@ def test_streamlit_metadata_file_mode_uses_canonical_report_path(monkeypatch):
     )
 
     assert result is report
-    assert calls == ["/tmp/orders.metadata.json"]
+    assert len(calls) == 1
+    assert isinstance(calls[0], AnalyzerConfiguration)
+    assert calls[0].table_source.location == "/tmp/orders.metadata.json"

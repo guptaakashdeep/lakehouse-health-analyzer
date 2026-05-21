@@ -1,0 +1,78 @@
+from configuration import AnalyzerConfiguration
+
+
+def test_configuration_loads_metadata_file_source_from_environment():
+    config = AnalyzerConfiguration.from_environment(
+        {"LHA_METADATA_LOCATION": "/tmp/orders.metadata.json"}
+    )
+
+    assert config.table_source.kind == "metadata_file"
+    assert config.table_source.location == "/tmp/orders.metadata.json"
+
+
+def test_ui_metadata_location_override_wins_over_environment():
+    config = AnalyzerConfiguration.from_environment(
+        {"LHA_METADATA_LOCATION": "/tmp/from-environment.metadata.json"},
+        ui_overrides={"metadata_location": "/tmp/from-ui.metadata.json"},
+    )
+
+    assert config.table_source.location == "/tmp/from-ui.metadata.json"
+
+
+def test_ui_metadata_location_override_can_supply_missing_environment_location():
+    config = AnalyzerConfiguration.from_environment(
+        {},
+        ui_overrides={"metadata_location": "/tmp/from-ui.metadata.json"},
+    )
+
+    assert config.table_source.location == "/tmp/from-ui.metadata.json"
+
+
+def test_configuration_loads_analysis_and_runtime_policies_from_environment():
+    config = AnalyzerConfiguration.from_environment(
+        {
+            "LHA_METADATA_LOCATION": "/tmp/orders.metadata.json",
+            "LHA_SNAPSHOT_RETENTION_DAYS": "45",
+            "LHA_RECOMMENDATION_THRESHOLDS": '{"small_file_count": 25}',
+            "LHA_HISTORY_DEPTH": "12",
+            "LHA_CACHE_TTL_SECONDS": "120",
+            "LHA_TIMEOUT_SECONDS": "7",
+            "LHA_MAX_CONCURRENCY": "3",
+        }
+    )
+
+    assert config.analysis.snapshot_retention_days == 45
+    assert config.analysis.recommendation_thresholds == {"small_file_count": 25}
+    assert config.analysis.history_depth == 12
+    assert config.runtime.cache_ttl_seconds == 120
+    assert config.runtime.timeout_seconds == 7
+    assert config.runtime.max_concurrency == 3
+
+
+def test_ui_policy_overrides_win_over_environment():
+    config = AnalyzerConfiguration.from_environment(
+        {
+            "LHA_METADATA_LOCATION": "/tmp/orders.metadata.json",
+            "LHA_SNAPSHOT_RETENTION_DAYS": "45",
+            "LHA_RECOMMENDATION_THRESHOLDS": '{"small_file_count": 25}',
+            "LHA_HISTORY_DEPTH": "12",
+            "LHA_CACHE_TTL_SECONDS": "120",
+            "LHA_TIMEOUT_SECONDS": "7",
+            "LHA_MAX_CONCURRENCY": "3",
+        },
+        ui_overrides={
+            "snapshot_retention_days": 14,
+            "recommendation_thresholds": {"small_file_count": 10},
+            "history_depth": 5,
+            "cache_ttl_seconds": 60,
+            "timeout_seconds": 2,
+            "max_concurrency": 1,
+        },
+    )
+
+    assert config.analysis.snapshot_retention_days == 14
+    assert config.analysis.recommendation_thresholds == {"small_file_count": 10}
+    assert config.analysis.history_depth == 5
+    assert config.runtime.cache_ttl_seconds == 60
+    assert config.runtime.timeout_seconds == 2
+    assert config.runtime.max_concurrency == 1

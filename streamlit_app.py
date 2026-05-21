@@ -11,8 +11,7 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 
 from analysis.iceberg import analyze_iceberg_metadata_file
-from analyzers.iceberg import IcebergAnalyzer
-from visualization.metrics_dashboard import show_dashboard
+from configuration import AnalyzerConfiguration
 
 
 def get_table_metrics(
@@ -22,8 +21,13 @@ def get_table_metrics(
     try:
         # Initialize analyzer based on mode
         if use_metadata_file:
-            return analyze_iceberg_metadata_file(metadata_location)
+            config = AnalyzerConfiguration.from_environment(
+                ui_overrides={"metadata_location": metadata_location}
+            )
+            return analyze_iceberg_metadata_file(config)
         else:
+            from analyzers.iceberg import IcebergAnalyzer
+
             analyzer = IcebergAnalyzer(
                 database="default", table_name=table_name, catalog_name=catalog_name
             )
@@ -37,6 +41,8 @@ def get_table_metrics(
 
 def main():
     """Run the dashboard with a function to get table metrics."""
+    from visualization.metrics_dashboard import show_dashboard
+
     show_dashboard(
         get_table_metrics=get_table_metrics,
         available_tables=["example.default.table1", "example.default.table2"],
