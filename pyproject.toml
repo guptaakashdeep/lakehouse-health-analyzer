@@ -43,12 +43,13 @@ packages = [
     "src/analyzers",
     "src/catalogs",
     "src/configuration",
+    "src/operator_cache",
     "src/visualization",
 ]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["analyzers", "catalogs", "visualization", "utils"]
+packages = ["analyzers", "catalogs", "operator_cache", "visualization", "utils"]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "src"] 
