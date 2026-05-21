@@ -103,6 +103,57 @@ def test_old_snapshots_use_configured_retention_policy_for_candidates():
     assert report.health_metric("expirable_snapshot_candidate_count").value == 1
 
 
+def test_expirable_snapshot_candidates_produce_snapshot_expiration_recommendation():
+    table = FakeIcebergTable(
+        snapshots=[
+            {"snapshot_id": 101, "committed_at": days_ago(70)},
+            {"snapshot_id": 102, "committed_at": days_ago(2)},
+        ],
+        current_snapshot_id=102,
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    recommendation = report.maintenance_recommendations[0]
+    assert recommendation.recommendation_type == "snapshot_expiration"
+    assert recommendation.severity == "info"
+    assert recommendation.evidence["expirable_snapshot_candidate_count"] == 1
+    assert recommendation.thresholds["snapshot_retention_days"] == 30
+    assert recommendation.thresholds["expirable_snapshot_candidate_count_info"] == 1
+    assert "expire" in recommendation.rationale.lower()
+
+
+def test_retained_snapshot_count_produces_metadata_cleanup_recommendation():
+    table = FakeIcebergTable(
+        snapshots=[
+            {"snapshot_id": 101, "committed_at": days_ago(4)},
+            {"snapshot_id": 102, "committed_at": days_ago(2)},
+        ],
+        current_snapshot_id=102,
+    )
+    config = AnalyzerConfiguration(
+        table_source=MetadataFileSourceConfiguration(
+            location="/tmp/orders.metadata.json"
+        ),
+        analysis=AnalysisPolicy(
+            recommendation_thresholds={
+                "valid_snapshot_count_warning": 2,
+            }
+        ),
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file(config)
+
+    recommendation = report.maintenance_recommendations[0]
+    assert recommendation.recommendation_type == "metadata_cleanup"
+    assert recommendation.severity == "warning"
+    assert recommendation.evidence["valid_snapshot_count"] == 2
+    assert recommendation.thresholds["valid_snapshot_count_warning"] == 2
+    assert "metadata" in recommendation.rationale.lower()
+
+
 def test_mixed_snapshots_only_count_non_current_old_candidates():
     table = FakeIcebergTable(
         snapshots=[

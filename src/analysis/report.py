@@ -39,6 +39,21 @@ class CalculationWarning:
 
 
 @dataclass(frozen=True)
+class MaintenanceRecommendation:
+    recommendation_type: str
+    severity: str
+    evidence: Mapping[str, MetricValue]
+    thresholds: Mapping[str, MetricValue]
+    rationale: str
+
+    def __post_init__(self) -> None:
+        if self.severity not in {"info", "warning", "critical"}:
+            raise ValueError(
+                "Recommendation Severity must be one of: info, warning, critical"
+            )
+
+
+@dataclass(frozen=True)
 class PartitionHealthMetric:
     partition: Mapping[str, Any]
     data_file_count: int
@@ -49,6 +64,22 @@ class PartitionHealthMetric:
 
 
 @dataclass(frozen=True)
+class EvolutionChange:
+    change_type: str
+    subject: str
+    name: str
+    before: Optional[str]
+    after: Optional[str]
+    source: str
+
+
+@dataclass(frozen=True)
+class TableEvolutionHistory:
+    schema_changes: Tuple[EvolutionChange, ...] = ()
+    property_changes: Tuple[EvolutionChange, ...] = ()
+
+
+@dataclass(frozen=True)
 class TableHealthReport:
     table_name: str
     table_source: TableSource
@@ -56,6 +87,8 @@ class TableHealthReport:
     display_statistics: Tuple[DisplayStatistic, ...]
     calculation_warnings: Tuple[CalculationWarning, ...] = ()
     partition_metrics: Tuple[PartitionHealthMetric, ...] = ()
+    table_evolution_history: TableEvolutionHistory = TableEvolutionHistory()
+    maintenance_recommendations: Tuple[MaintenanceRecommendation, ...] = ()
 
     def health_metric(self, key: str) -> HealthMetric:
         for metric in self.health_metrics:
