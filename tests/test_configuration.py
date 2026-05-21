@@ -1,4 +1,4 @@
-from configuration import AnalyzerConfiguration
+from configuration import AnalyzerConfiguration, GlueCatalogTableSourceConfiguration
 
 
 def test_configuration_loads_metadata_file_source_from_environment():
@@ -26,6 +26,27 @@ def test_ui_metadata_location_override_can_supply_missing_environment_location()
     )
 
     assert config.table_source.location == "/tmp/from-ui.metadata.json"
+
+
+def test_configuration_loads_glue_catalog_table_source_from_environment():
+    config = AnalyzerConfiguration.from_environment(
+        {
+            "LHA_TABLE_SOURCE_KIND": "glue_catalog_table",
+            "LHA_GLUE_CATALOG_NAME": "analytics",
+            "LHA_GLUE_NAMESPACE": "sales.curated",
+            "LHA_GLUE_TABLE_NAME": "orders",
+            "LHA_AWS_PROFILE": "dev",
+            "LHA_AWS_REGION": "us-east-1",
+        }
+    )
+
+    assert config.table_source == GlueCatalogTableSourceConfiguration(
+        catalog_name="analytics",
+        namespace=("sales", "curated"),
+        table_name="orders",
+        aws_profile="dev",
+        region="us-east-1",
+    )
 
 
 def test_configuration_loads_analysis_and_runtime_policies_from_environment():

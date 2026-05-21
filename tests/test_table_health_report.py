@@ -1,8 +1,12 @@
 from unittest.mock import patch
 
-from analysis.iceberg import analyze_iceberg_metadata_file
+from analysis.iceberg import analyze_iceberg_metadata_file, analyze_iceberg_table
 from analysis.report import CalculationWarning
-from configuration import AnalyzerConfiguration, MetadataFileSourceConfiguration
+from configuration import (
+    AnalyzerConfiguration,
+    GlueCatalogTableSourceConfiguration,
+    MetadataFileSourceConfiguration,
+)
 
 
 class FakeInspect:
@@ -16,6 +20,9 @@ class FakeInspect:
     def partitions(self):
         return self._partitions
 
+    def snapshots(self):
+        return ()
+
 
 class FakeIcebergTable:
     def __init__(self, name, files, partitions=()):
@@ -24,6 +31,9 @@ class FakeIcebergTable:
 
     def name(self):
         return self._name
+
+    def current_snapshot(self):
+        return None
 
 
 def test_metadata_file_analysis_produces_canonical_table_health_report():
@@ -82,6 +92,37 @@ def test_metadata_file_analysis_accepts_centralized_configuration():
 
     assert report.table_source.kind == "metadata_file"
     assert report.table_source.location == "/tmp/orders.metadata.json"
+    assert report.health_metric("data_file_count").value == 1
+
+
+def test_glue_catalog_table_analysis_uses_centralized_configuration():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [{"content": 0, "file_size_in_bytes": 64, "record_count": 10}],
+    )
+    config = AnalyzerConfiguration(
+        table_source=GlueCatalogTableSourceConfiguration(
+            catalog_name="analytics",
+            namespace=("sales",),
+            table_name="orders",
+            aws_profile="dev",
+            region="us-east-1",
+        )
+    )
+
+    with patch("analysis.iceberg.load_catalog") as load_catalog:
+        load_catalog.return_value.load_table.return_value = table
+        report = analyze_iceberg_table(config)
+
+    load_catalog.assert_called_once_with(
+        "analytics",
+        type="glue",
+        **{"glue.profile-name": "dev", "glue.region": "us-east-1"},
+    )
+    load_catalog.return_value.load_table.assert_called_once_with(("sales", "orders"))
+    assert report.table_name == "warehouse.sales.orders"
+    assert report.table_source.kind == "glue_catalog_table"
+    assert report.table_source.location == "analytics.sales.orders"
     assert report.health_metric("data_file_count").value == 1
 
 
