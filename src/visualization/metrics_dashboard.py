@@ -1,7 +1,11 @@
 import time
+import os
 from typing import List, Callable
+
 import streamlit as st
 
+from configuration import RuntimePolicy
+from operator_cache import CatalogOverviewCache, default_catalog_overview_cache_path
 from visualization.dashboard_utils import (
     display_metrics_with_tabs,
 )
@@ -174,6 +178,8 @@ def show_dashboard(
         st.session_state.dashboard_state["aws_profile"] = aws_profile
         st.session_state.dashboard_state["aws_region"] = aws_region
 
+        force_refresh = st.checkbox("Refresh cached overview", value=False)
+
         # Add a button to trigger analysis
         if st.button("Load Catalog Overview"):
             # Create a progress bar
@@ -205,6 +211,17 @@ def show_dashboard(
 
             status_text.text("Analyzing catalog tables...")
             progress_bar.progress(0.5)
+            cache = CatalogOverviewCache(
+                default_catalog_overview_cache_path(),
+                ttl_seconds=_catalog_overview_cache_ttl_seconds(),
+            )
+            cache_scope_key = _catalog_overview_cache_scope_key(
+                catalog_name=catalog_name,
+                catalog_namespace=catalog_namespace,
+                aws_profile=aws_profile,
+                aws_region=aws_region,
+                table_names=tuple(table_names),
+            )
             overview = build_catalog_overview(
                 table_names=tuple(table_names),
                 analyze_table=lambda table_name: get_table_metrics(
@@ -215,6 +232,9 @@ def show_dashboard(
                     aws_profile=aws_profile or None,
                     aws_region=aws_region or None,
                 ),
+                cache=cache,
+                cache_scope_key=cache_scope_key,
+                refresh=force_refresh,
             )
 
             st.session_state.dashboard_state["catalog_overview"] = overview
@@ -251,4 +271,28 @@ def _catalog_table_names(
         namespace=catalog_namespace or None,
         aws_profile=aws_profile or None,
         aws_region=aws_region or None,
+    )
+
+
+def _catalog_overview_cache_ttl_seconds() -> int:
+    return int(
+        os.environ.get("LHA_CACHE_TTL_SECONDS", RuntimePolicy().cache_ttl_seconds)
+    )
+
+
+def _catalog_overview_cache_scope_key(
+    catalog_name: str,
+    catalog_namespace: str,
+    aws_profile: str,
+    aws_region: str,
+    table_names: tuple[str, ...],
+) -> str:
+    return "|".join(
+        (
+            catalog_name or "",
+            catalog_namespace or "",
+            aws_profile or "",
+            aws_region or "",
+            "\n".join(table_names),
+        )
     )

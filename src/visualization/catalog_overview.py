@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from datetime import datetime
+from typing import Callable, Mapping, Protocol
 
 from analysis.report import TableHealthReport
 
@@ -15,6 +16,8 @@ except ModuleNotFoundError:
 class CatalogOverview:
     rows: tuple[Mapping[str, object], ...]
     failures: tuple[Mapping[str, str], ...] = ()
+    cache_status: str = "fresh"
+    last_analyzed_at: datetime | None = None
 
     @property
     def table_count(self) -> int:
@@ -25,10 +28,31 @@ class CatalogOverview:
         return len(self.failures)
 
 
+class CatalogOverviewCacheBackend(Protocol):
+    def read(self, scope_key: str) -> CatalogOverview | None: ...
+
+    def write(self, scope_key: str, overview: CatalogOverview) -> CatalogOverview: ...
+
+    def invalidate(self, scope_key: str) -> None: ...
+
+
 def build_catalog_overview(
     table_names: tuple[str, ...],
     analyze_table: Callable[[str], TableHealthReport],
+    *,
+    cache: CatalogOverviewCacheBackend | None = None,
+    cache_scope_key: str | None = None,
+    refresh: bool = False,
 ) -> CatalogOverview:
+    if cache is not None:
+        scope_key = cache_scope_key or _cache_scope_key(table_names)
+        if refresh:
+            cache.invalidate(scope_key)
+        else:
+            cached_overview = cache.read(scope_key)
+            if cached_overview is not None:
+                return cached_overview
+
     reports = []
     failures = []
     for table_name in table_names:
@@ -42,10 +66,13 @@ def build_catalog_overview(
                     "message": str(exc),
                 }
             )
-    return CatalogOverview(
+    overview = CatalogOverview(
         rows=tuple(_overview_row(report) for report in reports),
         failures=tuple(failures),
     )
+    if cache is not None:
+        return cache.write(scope_key, overview)
+    return overview
 
 
 def display_catalog_overview(overview: CatalogOverview) -> None:
@@ -54,6 +81,9 @@ def display_catalog_overview(overview: CatalogOverview) -> None:
 
     st.metric("Analyzed Tables", overview.table_count)
     st.metric("Table Warnings", overview.failure_count)
+    st.metric("Cache Status", overview.cache_status)
+    if overview.last_analyzed_at is not None:
+        st.metric("Last Analyzed", overview.last_analyzed_at.isoformat())
 
     for failure in overview.failures:
         st.warning(f"{failure['table']}: {failure['message']}")
@@ -86,6 +116,10 @@ def _overview_row(report: TableHealthReport) -> Mapping[str, object]:
         "warning_recommendation_count": recommendation_counts["warning"],
         "critical_recommendation_count": recommendation_counts["critical"],
     }
+
+
+def _cache_scope_key(table_names: tuple[str, ...]) -> str:
+    return "\n".join(table_names)
 
 
 def _display_statistic_value(report: TableHealthReport, key: str) -> object:
