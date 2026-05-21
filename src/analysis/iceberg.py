@@ -1,4 +1,7 @@
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Optional, Tuple
+
+from pyiceberg.catalog import load_catalog
 
 from analysis.report import (
     CalculationWarning,
@@ -8,7 +11,7 @@ from analysis.report import (
     TableHealthReport,
     TableSource,
 )
-from configuration import AnalyzerConfiguration
+from configuration import AnalyzerConfiguration, GlueCatalogTableSourceConfiguration
 
 
 HIGH_FILE_COUNT_PARTITION_THRESHOLD = 100
@@ -18,14 +21,37 @@ def analyze_iceberg_metadata_file(
     metadata_source: str | AnalyzerConfiguration,
 ) -> TableHealthReport:
     metadata_location = _metadata_location(metadata_source)
+    snapshot_retention_days = _snapshot_retention_days(metadata_source)
     table = _load_static_table(metadata_location)
-    return IcebergTableFormatAdapter().analyze_table(
+    return IcebergTableFormatAdapter(
+        snapshot_retention_days=snapshot_retention_days
+    ).analyze_table(
         table=table,
         table_source=TableSource(kind="metadata_file", location=metadata_location),
     )
 
 
+def analyze_iceberg_table(config: AnalyzerConfiguration) -> TableHealthReport:
+    table_source = config.table_source
+    if isinstance(table_source, GlueCatalogTableSourceConfiguration):
+        table = _load_glue_catalog_table(table_source)
+        return IcebergTableFormatAdapter(
+            snapshot_retention_days=config.analysis.snapshot_retention_days
+        ).analyze_table(
+            table=table,
+            table_source=TableSource(
+                kind=table_source.kind,
+                location=_catalog_table_location(table_source),
+            ),
+        )
+
+    return analyze_iceberg_metadata_file(config)
+
+
 class IcebergTableFormatAdapter:
+    def __init__(self, snapshot_retention_days: int = 30):
+        self.snapshot_retention_days = snapshot_retention_days
+
     def analyze_table(self, table: Any, table_source: TableSource) -> TableHealthReport:
         table_name = _table_name(table)
         file_rows = tuple(_rows_from_table(table.inspect.files()))
@@ -130,6 +156,11 @@ class IcebergTableFormatAdapter:
                     ),
                 )
             )
+        snapshot_metrics, snapshot_warnings = _snapshot_metrics(
+            table=table,
+            snapshot_retention_days=self.snapshot_retention_days,
+        )
+        warnings.extend(snapshot_warnings)
 
         health_metrics = (
             HealthMetric(
@@ -269,6 +300,7 @@ class IcebergTableFormatAdapter:
                 unit=None,
                 source="iceberg.inspect.partitions",
             ),
+            *snapshot_metrics,
         )
 
         display_statistics = (
@@ -302,10 +334,31 @@ def _load_static_table(metadata_location: str) -> Any:
     return StaticTable.from_metadata(metadata_location=metadata_location)
 
 
+def _load_glue_catalog_table(source: GlueCatalogTableSourceConfiguration) -> Any:
+    properties = {"type": "glue"}
+    if source.aws_profile is not None:
+        properties["glue.profile-name"] = source.aws_profile
+    if source.region is not None:
+        properties["glue.region"] = source.region
+
+    catalog = load_catalog(source.catalog_name, **properties)
+    return catalog.load_table((*source.namespace, source.table_name))
+
+
+def _catalog_table_location(source: GlueCatalogTableSourceConfiguration) -> str:
+    return ".".join((source.catalog_name, *source.namespace, source.table_name))
+
+
 def _metadata_location(metadata_source: str | AnalyzerConfiguration) -> str:
     if isinstance(metadata_source, AnalyzerConfiguration):
         return metadata_source.table_source.location
     return metadata_source
+
+
+def _snapshot_retention_days(metadata_source: str | AnalyzerConfiguration) -> int:
+    if isinstance(metadata_source, AnalyzerConfiguration):
+        return metadata_source.analysis.snapshot_retention_days
+    return 30
 
 
 def _table_name(table: Any) -> str:
@@ -357,6 +410,187 @@ def _partition_metric_from_row(row: Mapping[str, Any]) -> PartitionHealthMetric:
         ),
         source="iceberg.inspect.partitions",
     )
+
+
+def _snapshot_metrics(
+    table: Any, snapshot_retention_days: int
+) -> tuple[tuple[HealthMetric, ...], tuple[CalculationWarning, ...]]:
+    if not hasattr(table.inspect, "snapshots"):
+        return _unknown_snapshot_metrics(
+            snapshot_retention_days,
+            "Iceberg snapshot metadata was not available, so snapshot health "
+            "metrics are unknown.",
+        )
+
+    snapshot_rows = tuple(_rows_from_table(table.inspect.snapshots()))
+    if any(_snapshot_id(row) is None for row in snapshot_rows):
+        return _unknown_snapshot_metrics(
+            snapshot_retention_days,
+            "Iceberg snapshot metadata did not include every snapshot id, so "
+            "snapshot health metrics are unknown.",
+        )
+
+    snapshot_rows_with_ages = tuple(
+        (row, _snapshot_age_days(row)) for row in snapshot_rows
+    )
+    if any(age_days is None for _, age_days in snapshot_rows_with_ages):
+        return _unknown_snapshot_metrics(
+            snapshot_retention_days,
+            "Iceberg snapshot metadata did not include every snapshot timestamp, "
+            "so snapshot health metrics are unknown.",
+        )
+
+    snapshot_ages = tuple(
+        age_days for _, age_days in snapshot_rows_with_ages if age_days is not None
+    )
+    current_snapshot_id = _current_snapshot_id(table)
+    if snapshot_rows and current_snapshot_id is None:
+        return (
+            _snapshot_health_metrics(
+                valid_snapshot_count=len(snapshot_ages),
+                oldest_snapshot_age_days=max(snapshot_ages, default=None),
+                latest_snapshot_age_days=min(snapshot_ages, default=None),
+                snapshot_retention_days=snapshot_retention_days,
+                expirable_snapshot_candidate_count=None,
+            ),
+            (
+                CalculationWarning(
+                    metric_key="expirable_snapshot_candidate_count",
+                    message=(
+                        "Iceberg current snapshot metadata was not available, so "
+                        "Expirable Snapshot Candidates cannot be calculated safely."
+                    ),
+                ),
+            ),
+        )
+
+    expirable_candidate_count = sum(
+        1
+        for row, age_days in snapshot_rows_with_ages
+        if age_days is not None
+        and age_days >= snapshot_retention_days
+        and _snapshot_id(row) != current_snapshot_id
+    )
+
+    return (
+        _snapshot_health_metrics(
+            valid_snapshot_count=len(snapshot_ages),
+            oldest_snapshot_age_days=max(snapshot_ages, default=None),
+            latest_snapshot_age_days=min(snapshot_ages, default=None),
+            snapshot_retention_days=snapshot_retention_days,
+            expirable_snapshot_candidate_count=expirable_candidate_count,
+        ),
+        (),
+    )
+
+
+def _snapshot_health_metrics(
+    valid_snapshot_count: Optional[int],
+    oldest_snapshot_age_days: Optional[int],
+    latest_snapshot_age_days: Optional[int],
+    snapshot_retention_days: int,
+    expirable_snapshot_candidate_count: Optional[int],
+) -> tuple[HealthMetric, ...]:
+    return (
+        HealthMetric(
+            key="valid_snapshot_count",
+            label="Valid Snapshot Count",
+            value=valid_snapshot_count,
+            unit="snapshots",
+            source="iceberg.inspect.snapshots",
+        ),
+        HealthMetric(
+            key="oldest_snapshot_age_days",
+            label="Oldest Snapshot Age",
+            value=oldest_snapshot_age_days,
+            unit="days",
+            source="iceberg.inspect.snapshots",
+        ),
+        HealthMetric(
+            key="latest_snapshot_age_days",
+            label="Latest Snapshot Age",
+            value=latest_snapshot_age_days,
+            unit="days",
+            source="iceberg.inspect.snapshots",
+        ),
+        HealthMetric(
+            key="snapshot_retention_days",
+            label="Snapshot Retention",
+            value=snapshot_retention_days,
+            unit="days",
+            source="analysis.policy.snapshot_retention_days",
+        ),
+        HealthMetric(
+            key="expirable_snapshot_candidate_count",
+            label="Expirable Snapshot Candidate Count",
+            value=expirable_snapshot_candidate_count,
+            unit="snapshots",
+            source="iceberg.inspect.snapshots",
+        ),
+    )
+
+
+def _unknown_snapshot_metrics(
+    snapshot_retention_days: int, message: str
+) -> tuple[tuple[HealthMetric, ...], tuple[CalculationWarning, ...]]:
+    unknown_metric_keys = (
+        "valid_snapshot_count",
+        "oldest_snapshot_age_days",
+        "latest_snapshot_age_days",
+        "expirable_snapshot_candidate_count",
+    )
+    return (
+        _snapshot_health_metrics(
+            valid_snapshot_count=None,
+            oldest_snapshot_age_days=None,
+            latest_snapshot_age_days=None,
+            snapshot_retention_days=snapshot_retention_days,
+            expirable_snapshot_candidate_count=None,
+        ),
+        tuple(
+            CalculationWarning(metric_key=metric_key, message=message)
+            for metric_key in unknown_metric_keys
+        ),
+    )
+
+
+def _snapshot_age_days(row: Mapping[str, Any]) -> Optional[int]:
+    committed_at = _snapshot_committed_at(row)
+    if committed_at is None:
+        return None
+    return int((_utc_now() - committed_at).total_seconds() // 86400)
+
+
+def _snapshot_committed_at(row: Mapping[str, Any]) -> Optional[datetime]:
+    value = row.get("committed_at", row.get("committed-at"))
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    timestamp_ms = row.get("timestamp_ms", row.get("timestamp-ms"))
+    if timestamp_ms is not None:
+        return datetime.fromtimestamp(int(timestamp_ms) / 1000, tz=timezone.utc)
+    return None
+
+
+def _current_snapshot_id(table: Any) -> Any:
+    if not hasattr(table, "current_snapshot"):
+        return None
+    current_snapshot = table.current_snapshot()
+    if isinstance(current_snapshot, Mapping):
+        return _snapshot_id(current_snapshot)
+    snapshot_id = getattr(current_snapshot, "snapshot_id", None)
+    if callable(snapshot_id):
+        return snapshot_id()
+    return snapshot_id
+
+
+def _snapshot_id(row: Mapping[str, Any]) -> Any:
+    return row.get("snapshot_id", row.get("snapshot-id"))
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _partition_value(row: Mapping[str, Any]) -> Mapping[str, Any]:

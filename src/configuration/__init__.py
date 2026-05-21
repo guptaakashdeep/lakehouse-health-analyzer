@@ -13,6 +13,16 @@ class MetadataFileSourceConfiguration:
 
 
 @dataclass(frozen=True)
+class GlueCatalogTableSourceConfiguration:
+    catalog_name: str
+    namespace: tuple[str, ...]
+    table_name: str
+    aws_profile: str | None = None
+    region: str | None = None
+    kind: str = "glue_catalog_table"
+
+
+@dataclass(frozen=True)
 class AnalysisPolicy:
     snapshot_retention_days: int = 30
     recommendation_thresholds: Mapping[str, int | float] = field(default_factory=dict)
@@ -33,7 +43,7 @@ class OutputPolicy:
 
 @dataclass(frozen=True)
 class AnalyzerConfiguration:
-    table_source: MetadataFileSourceConfiguration
+    table_source: MetadataFileSourceConfiguration | GlueCatalogTableSourceConfiguration
     analysis: AnalysisPolicy = field(default_factory=AnalysisPolicy)
     runtime: RuntimePolicy = field(default_factory=RuntimePolicy)
     output: OutputPolicy = field(default_factory=OutputPolicy)
@@ -46,9 +56,8 @@ class AnalyzerConfiguration:
     ) -> "AnalyzerConfiguration":
         values = os.environ if environ is None else environ
         overrides = {} if ui_overrides is None else ui_overrides
-        metadata_location = _metadata_location_value(values, overrides)
         return cls(
-            table_source=MetadataFileSourceConfiguration(location=metadata_location),
+            table_source=_table_source_value(values, overrides),
             analysis=AnalysisPolicy(
                 snapshot_retention_days=_override_int(
                     overrides,
@@ -84,6 +93,77 @@ class AnalyzerConfiguration:
                 ),
             ),
         )
+
+
+def _table_source_value(
+    values: Mapping[str, str], overrides: Mapping[str, object]
+) -> MetadataFileSourceConfiguration | GlueCatalogTableSourceConfiguration:
+    source_kind = str(
+        overrides.get(
+            "table_source_kind",
+            values.get("LHA_TABLE_SOURCE_KIND", "metadata_file"),
+        )
+    )
+    if source_kind == "glue_catalog_table":
+        return GlueCatalogTableSourceConfiguration(
+            catalog_name=_required_source_value(
+                values, overrides, "glue_catalog_name", "LHA_GLUE_CATALOG_NAME"
+            ),
+            namespace=_namespace_value(values, overrides),
+            table_name=_required_source_value(
+                values, overrides, "glue_table_name", "LHA_GLUE_TABLE_NAME"
+            ),
+            aws_profile=_optional_source_value(
+                values, overrides, "aws_profile", "LHA_AWS_PROFILE"
+            ),
+            region=_optional_source_value(
+                values, overrides, "aws_region", "LHA_AWS_REGION"
+            ),
+        )
+    if source_kind != "metadata_file":
+        raise ValueError(f"Unsupported table source kind: {source_kind}")
+    return MetadataFileSourceConfiguration(
+        location=_metadata_location_value(values, overrides)
+    )
+
+
+def _required_source_value(
+    values: Mapping[str, str],
+    overrides: Mapping[str, object],
+    override_key: str,
+    environment_key: str,
+) -> str:
+    raw_override = overrides.get(override_key)
+    if raw_override is not None:
+        return str(raw_override)
+    return values[environment_key]
+
+
+def _optional_source_value(
+    values: Mapping[str, str],
+    overrides: Mapping[str, object],
+    override_key: str,
+    environment_key: str,
+) -> str | None:
+    raw_override = overrides.get(override_key)
+    if raw_override is not None:
+        return str(raw_override)
+    return values.get(environment_key)
+
+
+def _namespace_value(
+    values: Mapping[str, str], overrides: Mapping[str, object]
+) -> tuple[str, ...]:
+    raw_override = overrides.get("glue_namespace")
+    if raw_override is not None:
+        if isinstance(raw_override, str):
+            return _namespace_parts(raw_override)
+        return tuple(str(part) for part in raw_override)
+    return _namespace_parts(values["LHA_GLUE_NAMESPACE"])
+
+
+def _namespace_parts(raw_value: str) -> tuple[str, ...]:
+    return tuple(part for part in raw_value.split(".") if part)
 
 
 def _int_value(values: Mapping[str, str], key: str, default: int) -> int:

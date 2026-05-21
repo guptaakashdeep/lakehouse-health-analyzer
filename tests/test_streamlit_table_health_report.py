@@ -6,7 +6,7 @@ from analysis.report import (
     TableHealthReport,
     TableSource,
 )
-from configuration import AnalyzerConfiguration
+from configuration import AnalyzerConfiguration, GlueCatalogTableSourceConfiguration
 from visualization.table_health_report import display_table_health_report
 
 
@@ -163,3 +163,39 @@ def test_streamlit_metadata_file_mode_uses_centralized_configuration(monkeypatch
     assert len(calls) == 1
     assert isinstance(calls[0], AnalyzerConfiguration)
     assert calls[0].table_source.location == "/tmp/orders.metadata.json"
+
+
+def test_streamlit_catalog_mode_uses_canonical_report_path(monkeypatch):
+    import streamlit_app
+
+    report = TableHealthReport(
+        table_name="warehouse.sales.orders",
+        table_source=TableSource(
+            kind="glue_catalog_table", location="analytics.sales.orders"
+        ),
+        health_metrics=(),
+        display_statistics=(),
+    )
+
+    calls = []
+
+    def fake_analyze(config):
+        calls.append(config)
+        return report
+
+    monkeypatch.setattr(streamlit_app, "analyze_iceberg_table", fake_analyze)
+
+    result = streamlit_app.get_table_metrics(
+        table_name="sales.orders",
+        catalog_name="analytics",
+        use_metadata_file=False,
+    )
+
+    assert result is report
+    assert len(calls) == 1
+    assert isinstance(calls[0], AnalyzerConfiguration)
+    assert calls[0].table_source == GlueCatalogTableSourceConfiguration(
+        catalog_name="analytics",
+        namespace=("sales",),
+        table_name="orders",
+    )

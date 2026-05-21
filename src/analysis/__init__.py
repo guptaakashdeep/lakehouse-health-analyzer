@@ -1,4 +1,4 @@
-from analysis.iceberg import analyze_iceberg_metadata_file
+from analysis.iceberg import analyze_iceberg_metadata_file, analyze_iceberg_table
 from analysis.report import (
     CalculationWarning,
     DisplayStatistic,
@@ -16,4 +16,5 @@ __all__ = [
     "TableHealthReport",
     "TableSource",
     "analyze_iceberg_metadata_file",
+    "analyze_iceberg_table",
 ]
