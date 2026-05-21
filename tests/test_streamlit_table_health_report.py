@@ -1,9 +1,12 @@
 from analysis.report import (
     CalculationWarning,
     DisplayStatistic,
+    EvolutionChange,
     HealthMetric,
+    MaintenanceRecommendation,
     PartitionHealthMetric,
     TableHealthReport,
+    TableEvolutionHistory,
     TableSource,
 )
 from configuration import AnalyzerConfiguration, GlueCatalogTableSourceConfiguration
@@ -15,6 +18,10 @@ class FakeStreamlit:
         self.headers = []
         self.metrics = []
         self.warnings = []
+        self.infos = []
+        self.errors = []
+        self.captions = []
+        self.messages = []
 
     def header(self, text):
         self.headers.append(text)
@@ -27,6 +34,18 @@ class FakeStreamlit:
 
     def warning(self, text):
         self.warnings.append(text)
+
+    def info(self, text):
+        self.infos.append(text)
+
+    def error(self, text):
+        self.errors.append(text)
+
+    def caption(self, text):
+        self.captions.append(text)
+
+    def write(self, text):
+        self.messages.append(text)
 
 
 class FakePartitionStreamlit(FakeStreamlit):
@@ -77,6 +96,40 @@ def test_streamlit_report_renderer_consumes_report_values(monkeypatch):
     assert ("Total File Size Bytes", "999 bytes") in fake_st.metrics
     assert ("Total File Size", "rendered by report") in fake_st.metrics
     assert fake_st.warnings == ["total_file_size_bytes: size is incomplete"]
+
+
+def test_streamlit_report_renderer_displays_maintenance_recommendations(monkeypatch):
+    fake_st = FakeStreamlit()
+    monkeypatch.setattr("visualization.table_health_report.st", fake_st)
+
+    report = TableHealthReport(
+        table_name="warehouse.sales.orders",
+        table_source=TableSource(
+            kind="metadata_file", location="/tmp/orders.metadata.json"
+        ),
+        health_metrics=(),
+        display_statistics=(),
+        maintenance_recommendations=(
+            MaintenanceRecommendation(
+                recommendation_type="compaction",
+                severity="critical",
+                evidence={"high_file_count_partition_count": 5},
+                thresholds={"high_file_count_partition_count_critical": 5},
+                rationale="Compact high file-count partitions.",
+            ),
+        ),
+    )
+
+    display_table_health_report(report)
+
+    assert "Maintenance Recommendations" in fake_st.headers
+    assert fake_st.errors == [
+        "Compaction (critical): Compact high file-count partitions."
+    ]
+    assert fake_st.captions == [
+        "Evidence: high_file_count_partition_count=5",
+        "Thresholds: high_file_count_partition_count_critical=5",
+    ]
 
 
 def test_streamlit_report_renderer_displays_partition_report_values(monkeypatch):
@@ -131,6 +184,64 @@ def test_streamlit_report_renderer_displays_partition_report_values(monkeypatch)
             "total_data_file_size_bytes": 400,
             "average_data_file_size_bytes": 100,
         }
+    ]
+
+
+def test_streamlit_report_renderer_displays_table_evolution_history(monkeypatch):
+    fake_st = FakePartitionStreamlit()
+    monkeypatch.setattr("visualization.table_health_report.st", fake_st)
+
+    report = TableHealthReport(
+        table_name="warehouse.sales.orders",
+        table_source=TableSource(
+            kind="metadata_file", location="/tmp/orders.metadata.json"
+        ),
+        health_metrics=(),
+        display_statistics=(),
+        table_evolution_history=TableEvolutionHistory(
+            schema_changes=(
+                EvolutionChange(
+                    change_type="added",
+                    subject="schema.column",
+                    name="customer_id",
+                    before=None,
+                    after="long",
+                    source="/tmp/v2.metadata.json",
+                ),
+            ),
+            property_changes=(
+                EvolutionChange(
+                    change_type="changed",
+                    subject="table.property",
+                    name="write.format.default",
+                    before="parquet",
+                    after="orc",
+                    source="/tmp/v2.metadata.json",
+                ),
+            ),
+        ),
+    )
+
+    display_table_health_report(report)
+
+    assert "Table Evolution History" in fake_st.headers
+    assert fake_st.dataframes[0].to_dict("records") == [
+        {
+            "change_type": "added",
+            "subject": "schema.column",
+            "name": "customer_id",
+            "before": None,
+            "after": "long",
+            "source": "/tmp/v2.metadata.json",
+        },
+        {
+            "change_type": "changed",
+            "subject": "table.property",
+            "name": "write.format.default",
+            "before": "parquet",
+            "after": "orc",
+            "source": "/tmp/v2.metadata.json",
+        },
     ]
 
 

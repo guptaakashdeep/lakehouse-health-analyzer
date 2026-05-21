@@ -1,18 +1,23 @@
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from analysis.iceberg import analyze_iceberg_metadata_file, analyze_iceberg_table
-from analysis.report import CalculationWarning
+import pytest
+
+from analysis.report import CalculationWarning, MaintenanceRecommendation
 from configuration import (
     AnalyzerConfiguration,
+    AnalysisPolicy,
     GlueCatalogTableSourceConfiguration,
     MetadataFileSourceConfiguration,
 )
 
 
 class FakeInspect:
-    def __init__(self, files, partitions=()):
+    def __init__(self, files, partitions=(), snapshots=()):
         self._files = files
         self._partitions = partitions
+        self._snapshots = snapshots
 
     def files(self):
         return self._files
@@ -21,18 +26,23 @@ class FakeInspect:
         return self._partitions
 
     def snapshots(self):
-        return ()
+        return self._snapshots
 
 
 class FakeIcebergTable:
-    def __init__(self, name, files, partitions=()):
+    def __init__(
+        self, name, files, partitions=(), snapshots=(), current_snapshot_id=None
+    ):
         self._name = name
-        self.inspect = FakeInspect(files, partitions)
+        self._current_snapshot_id = current_snapshot_id
+        self.inspect = FakeInspect(files, partitions, snapshots)
 
     def name(self):
         return self._name
 
     def current_snapshot(self):
+        if self._current_snapshot_id is not None:
+            return {"snapshot_id": self._current_snapshot_id}
         return None
 
 
@@ -74,6 +84,17 @@ def test_metadata_file_analysis_produces_canonical_table_health_report():
             ),
         ),
     )
+
+
+def test_maintenance_recommendation_severity_is_limited_to_known_values():
+    with pytest.raises(ValueError):
+        MaintenanceRecommendation(
+            recommendation_type="compaction",
+            severity="urgent",
+            evidence={},
+            thresholds={},
+            rationale="Unsupported severity should fail.",
+        )
 
 
 def test_metadata_file_analysis_accepts_centralized_configuration():
@@ -281,6 +302,64 @@ def test_high_file_count_partition_pressure_is_reported_with_evidence():
     assert report.partition_metrics[1].data_file_count == 125
 
 
+def test_high_file_count_partition_pressure_produces_compaction_recommendation():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [{"content": 0, "file_size_in_bytes": 1, "record_count": 1}],
+        partitions=[
+            {
+                "partition": {"date": "2026-05-20"},
+                "file_count": 125,
+                "total_data_file_size_in_bytes": 1250,
+            },
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    recommendation = report.maintenance_recommendations[0]
+    assert recommendation.recommendation_type == "compaction"
+    assert recommendation.severity == "warning"
+    assert recommendation.evidence["high_file_count_partition_count"] == 1
+    assert recommendation.evidence["max_data_files_per_partition"] == 125
+    assert recommendation.thresholds["high_file_count_partition_threshold"] == 100
+    assert recommendation.thresholds["high_file_count_partition_count_warning"] == 1
+    assert "compact" in recommendation.rationale.lower()
+
+
+def test_compaction_recommendation_respects_configured_severity_boundaries():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [{"content": 0, "file_size_in_bytes": 1, "record_count": 1}],
+        partitions=[
+            {
+                "partition": {"date": "2026-05-20"},
+                "file_count": 125,
+                "total_data_file_size_in_bytes": 1250,
+            },
+        ],
+    )
+    config = AnalyzerConfiguration(
+        table_source=MetadataFileSourceConfiguration(
+            location="/tmp/orders.metadata.json"
+        ),
+        analysis=AnalysisPolicy(
+            recommendation_thresholds={
+                "high_file_count_partition_count_warning": 2,
+                "high_file_count_partition_count_critical": 1,
+            }
+        ),
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file(config)
+
+    recommendation = report.maintenance_recommendations[0]
+    assert recommendation.severity == "critical"
+    assert recommendation.thresholds["high_file_count_partition_count_critical"] == 1
+
+
 def test_non_partitioned_metadata_without_partition_column_analyzes_successfully():
     table = FakeIcebergTable(
         ("warehouse", "sales", "orders"),
@@ -371,6 +450,72 @@ def test_position_delete_files_make_estimated_current_record_count_unknown():
         warning.metric_key == "estimated_current_record_count"
         for warning in report.calculation_warnings
     )
+
+
+def test_delete_files_produce_delete_file_cleanup_recommendation():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [
+            {"content": 0, "file_size_in_bytes": 120, "record_count": 10},
+            {"content": 1, "file_size_in_bytes": 20, "record_count": 2},
+        ],
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/orders.metadata.json")
+
+    recommendation = report.maintenance_recommendations[0]
+    assert recommendation.recommendation_type == "delete_file_cleanup"
+    assert recommendation.severity == "info"
+    assert recommendation.evidence["delete_file_count"] == 1
+    assert recommendation.evidence["position_delete_record_count"] == 2
+    assert recommendation.thresholds["delete_file_count_info"] == 1
+    assert "delete file" in recommendation.rationale.lower()
+
+
+def test_report_can_include_multiple_simultaneous_maintenance_recommendations():
+    table = FakeIcebergTable(
+        ("warehouse", "sales", "orders"),
+        [
+            {"content": 0, "file_size_in_bytes": 120, "record_count": 10},
+            {"content": 1, "file_size_in_bytes": 20, "record_count": 2},
+        ],
+        partitions=[
+            {
+                "partition": {"date": "2026-05-20"},
+                "file_count": 125,
+                "total_data_file_size_in_bytes": 1250,
+            },
+        ],
+        snapshots=[
+            {"snapshot_id": 101, "committed_at": datetime.now(timezone.utc)},
+            {"snapshot_id": 102, "timestamp_ms": 0},
+        ],
+        current_snapshot_id=101,
+    )
+    config = AnalyzerConfiguration(
+        table_source=MetadataFileSourceConfiguration(
+            location="/tmp/orders.metadata.json"
+        ),
+        analysis=AnalysisPolicy(
+            recommendation_thresholds={
+                "valid_snapshot_count_warning": 2,
+            }
+        ),
+    )
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file(config)
+
+    assert {
+        recommendation.recommendation_type
+        for recommendation in report.maintenance_recommendations
+    } == {
+        "compaction",
+        "snapshot_expiration",
+        "metadata_cleanup",
+        "delete_file_cleanup",
+    }
 
 
 def test_equality_delete_files_are_counted_in_delete_file_metrics():

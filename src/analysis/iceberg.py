@@ -6,8 +6,11 @@ from pyiceberg.catalog import load_catalog
 from analysis.report import (
     CalculationWarning,
     DisplayStatistic,
+    EvolutionChange,
     HealthMetric,
+    MaintenanceRecommendation,
     PartitionHealthMetric,
+    TableEvolutionHistory,
     TableHealthReport,
     TableSource,
 )
@@ -22,9 +25,11 @@ def analyze_iceberg_metadata_file(
 ) -> TableHealthReport:
     metadata_location = _metadata_location(metadata_source)
     snapshot_retention_days = _snapshot_retention_days(metadata_source)
+    recommendation_thresholds = _recommendation_thresholds(metadata_source)
     table = _load_static_table(metadata_location)
     return IcebergTableFormatAdapter(
-        snapshot_retention_days=snapshot_retention_days
+        snapshot_retention_days=snapshot_retention_days,
+        recommendation_thresholds=recommendation_thresholds,
     ).analyze_table(
         table=table,
         table_source=TableSource(kind="metadata_file", location=metadata_location),
@@ -36,7 +41,8 @@ def analyze_iceberg_table(config: AnalyzerConfiguration) -> TableHealthReport:
     if isinstance(table_source, GlueCatalogTableSourceConfiguration):
         table = _load_glue_catalog_table(table_source)
         return IcebergTableFormatAdapter(
-            snapshot_retention_days=config.analysis.snapshot_retention_days
+            snapshot_retention_days=config.analysis.snapshot_retention_days,
+            recommendation_thresholds=config.analysis.recommendation_thresholds,
         ).analyze_table(
             table=table,
             table_source=TableSource(
@@ -49,8 +55,15 @@ def analyze_iceberg_table(config: AnalyzerConfiguration) -> TableHealthReport:
 
 
 class IcebergTableFormatAdapter:
-    def __init__(self, snapshot_retention_days: int = 30):
+    def __init__(
+        self,
+        snapshot_retention_days: int = 30,
+        recommendation_thresholds: Mapping[str, int | float] | None = None,
+    ):
         self.snapshot_retention_days = snapshot_retention_days
+        self.recommendation_thresholds = (
+            {} if recommendation_thresholds is None else recommendation_thresholds
+        )
 
     def analyze_table(self, table: Any, table_source: TableSource) -> TableHealthReport:
         table_name = _table_name(table)
@@ -161,6 +174,10 @@ class IcebergTableFormatAdapter:
             snapshot_retention_days=self.snapshot_retention_days,
         )
         warnings.extend(snapshot_warnings)
+        table_evolution_history, table_evolution_warnings = _table_evolution_history(
+            table
+        )
+        warnings.extend(table_evolution_warnings)
 
         health_metrics = (
             HealthMetric(
@@ -317,6 +334,10 @@ class IcebergTableFormatAdapter:
                 derived_from=("data_file_size_bytes", "data_file_count"),
             ),
         )
+        maintenance_recommendations = _maintenance_recommendations(
+            health_metrics=health_metrics,
+            thresholds=self.recommendation_thresholds,
+        )
 
         return TableHealthReport(
             table_name=table_name,
@@ -325,6 +346,8 @@ class IcebergTableFormatAdapter:
             display_statistics=display_statistics,
             calculation_warnings=tuple(warnings),
             partition_metrics=partition_metrics,
+            table_evolution_history=table_evolution_history,
+            maintenance_recommendations=maintenance_recommendations,
         )
 
 
@@ -359,6 +382,14 @@ def _snapshot_retention_days(metadata_source: str | AnalyzerConfiguration) -> in
     if isinstance(metadata_source, AnalyzerConfiguration):
         return metadata_source.analysis.snapshot_retention_days
     return 30
+
+
+def _recommendation_thresholds(
+    metadata_source: str | AnalyzerConfiguration,
+) -> Mapping[str, int | float]:
+    if isinstance(metadata_source, AnalyzerConfiguration):
+        return metadata_source.analysis.recommendation_thresholds
+    return {}
 
 
 def _table_name(table: Any) -> str:
@@ -554,6 +585,190 @@ def _unknown_snapshot_metrics(
     )
 
 
+def _maintenance_recommendations(
+    health_metrics: tuple[HealthMetric, ...],
+    thresholds: Mapping[str, int | float],
+) -> tuple[MaintenanceRecommendation, ...]:
+    metric_values = {metric.key: metric.value for metric in health_metrics}
+    recommendations = []
+
+    high_partition_count = metric_values.get("high_file_count_partition_count")
+    high_partition_count_warning = _threshold_value(
+        thresholds, "high_file_count_partition_count_warning", 1
+    )
+    high_partition_count_critical = _threshold_value(
+        thresholds, "high_file_count_partition_count_critical", 5
+    )
+    high_file_count_threshold = metric_values.get("high_file_count_partition_threshold")
+    if (
+        high_partition_count is not None
+        and high_file_count_threshold is not None
+        and (
+            high_partition_count >= high_partition_count_warning
+            or high_partition_count >= high_partition_count_critical
+        )
+    ):
+        severity = (
+            "critical"
+            if high_partition_count >= high_partition_count_critical
+            else "warning"
+        )
+        recommendations.append(
+            MaintenanceRecommendation(
+                recommendation_type="compaction",
+                severity=severity,
+                evidence={
+                    "high_file_count_partition_count": high_partition_count,
+                    "max_data_files_per_partition": metric_values.get(
+                        "max_data_files_per_partition"
+                    ),
+                },
+                thresholds={
+                    "high_file_count_partition_threshold": high_file_count_threshold,
+                    "high_file_count_partition_count_warning": (
+                        high_partition_count_warning
+                    ),
+                    "high_file_count_partition_count_critical": (
+                        high_partition_count_critical
+                    ),
+                },
+                rationale=(
+                    "Compact data files in high file-count partitions to reduce "
+                    "planning overhead and read amplification."
+                ),
+            )
+        )
+
+    expirable_snapshot_candidate_count = metric_values.get(
+        "expirable_snapshot_candidate_count"
+    )
+    expirable_snapshot_count_info = _threshold_value(
+        thresholds, "expirable_snapshot_candidate_count_info", 1
+    )
+    if (
+        expirable_snapshot_candidate_count is not None
+        and expirable_snapshot_candidate_count >= expirable_snapshot_count_info
+    ):
+        recommendations.append(
+            MaintenanceRecommendation(
+                recommendation_type="snapshot_expiration",
+                severity="info",
+                evidence={
+                    "expirable_snapshot_candidate_count": (
+                        expirable_snapshot_candidate_count
+                    ),
+                    "oldest_snapshot_age_days": metric_values.get(
+                        "oldest_snapshot_age_days"
+                    ),
+                },
+                thresholds={
+                    "snapshot_retention_days": metric_values.get(
+                        "snapshot_retention_days"
+                    ),
+                    "expirable_snapshot_candidate_count_info": (
+                        expirable_snapshot_count_info
+                    ),
+                },
+                rationale=(
+                    "Expire eligible retained snapshots under the configured "
+                    "retention policy to reduce retained metadata and storage "
+                    "pressure."
+                ),
+            )
+        )
+
+    valid_snapshot_count = metric_values.get("valid_snapshot_count")
+    valid_snapshot_count_warning = _threshold_value(
+        thresholds, "valid_snapshot_count_warning", 100
+    )
+    valid_snapshot_count_critical = _threshold_value(
+        thresholds, "valid_snapshot_count_critical", 500
+    )
+    if valid_snapshot_count is not None and (
+        valid_snapshot_count >= valid_snapshot_count_warning
+        or valid_snapshot_count >= valid_snapshot_count_critical
+    ):
+        severity = (
+            "critical"
+            if valid_snapshot_count >= valid_snapshot_count_critical
+            else "warning"
+        )
+        recommendations.append(
+            MaintenanceRecommendation(
+                recommendation_type="metadata_cleanup",
+                severity=severity,
+                evidence={
+                    "valid_snapshot_count": valid_snapshot_count,
+                    "oldest_snapshot_age_days": metric_values.get(
+                        "oldest_snapshot_age_days"
+                    ),
+                },
+                thresholds={
+                    "valid_snapshot_count_warning": valid_snapshot_count_warning,
+                    "valid_snapshot_count_critical": valid_snapshot_count_critical,
+                },
+                rationale=(
+                    "Review metadata history retention because many valid "
+                    "snapshots are retained for this table."
+                ),
+            )
+        )
+
+    delete_file_count = metric_values.get("delete_file_count")
+    delete_file_count_info = _threshold_value(thresholds, "delete_file_count_info", 1)
+    delete_file_count_warning = _threshold_value(
+        thresholds, "delete_file_count_warning", 10
+    )
+    delete_file_count_critical = _threshold_value(
+        thresholds, "delete_file_count_critical", 100
+    )
+    if delete_file_count is not None and (
+        delete_file_count >= delete_file_count_info
+        or delete_file_count >= delete_file_count_warning
+        or delete_file_count >= delete_file_count_critical
+    ):
+        severity = "info"
+        if delete_file_count >= delete_file_count_critical:
+            severity = "critical"
+        elif delete_file_count >= delete_file_count_warning:
+            severity = "warning"
+        recommendations.append(
+            MaintenanceRecommendation(
+                recommendation_type="delete_file_cleanup",
+                severity=severity,
+                evidence={
+                    "delete_file_count": delete_file_count,
+                    "position_delete_record_count": metric_values.get(
+                        "position_delete_record_count"
+                    ),
+                    "equality_delete_record_count": metric_values.get(
+                        "equality_delete_record_count"
+                    ),
+                    "delete_file_size_bytes": metric_values.get(
+                        "delete_file_size_bytes"
+                    ),
+                },
+                thresholds={
+                    "delete_file_count_info": delete_file_count_info,
+                    "delete_file_count_warning": delete_file_count_warning,
+                    "delete_file_count_critical": delete_file_count_critical,
+                },
+                rationale=(
+                    "Review delete file pressure because delete files can increase "
+                    "read planning and scan work."
+                ),
+            )
+        )
+
+    return tuple(recommendations)
+
+
+def _threshold_value(
+    thresholds: Mapping[str, int | float], key: str, default: int | float
+) -> int | float:
+    return thresholds.get(key, default)
+
+
 def _snapshot_age_days(row: Mapping[str, Any]) -> Optional[int]:
     committed_at = _snapshot_committed_at(row)
     if committed_at is None:
@@ -587,6 +802,340 @@ def _current_snapshot_id(table: Any) -> Any:
 
 def _snapshot_id(row: Mapping[str, Any]) -> Any:
     return row.get("snapshot_id", row.get("snapshot-id"))
+
+
+def _table_evolution_history(
+    table: Any,
+) -> tuple[TableEvolutionHistory, tuple[CalculationWarning, ...]]:
+    metadata_entries = _retained_metadata_entries(table)
+    schema_changes = []
+    property_changes = []
+    warnings = []
+
+    if _retained_metadata_history_complete(
+        table
+    ) is False or _has_uninspected_metadata_log(table):
+        warnings.append(
+            CalculationWarning(
+                metric_key="table_evolution_history",
+                message=(
+                    "Iceberg retained metadata history is incomplete or pruned, so "
+                    "Table Evolution History is not a complete audit log."
+                ),
+            )
+        )
+
+    for previous, current in zip(metadata_entries, metadata_entries[1:]):
+        schema_changes.extend(_schema_changes(previous, current))
+        property_changes.extend(_property_changes(previous, current))
+
+    return (
+        TableEvolutionHistory(
+            schema_changes=tuple(schema_changes),
+            property_changes=tuple(property_changes),
+        ),
+        tuple(warnings),
+    )
+
+
+def _retained_metadata_entries(table: Any) -> tuple[Any, ...]:
+    metadata_history = _attribute_or_call(table, "metadata_history")
+    if metadata_history is None:
+        metadata = _attribute_or_call(table, "metadata")
+        metadata_log = _mapping_or_attribute(metadata, "metadata_log") or ()
+        if metadata_log:
+            return _metadata_entries_from_metadata_log(metadata, metadata_log)
+        return _schema_entries_from_current_metadata(metadata)
+    return tuple(metadata_history)
+
+
+def _retained_metadata_history_complete(table: Any) -> Any:
+    return _attribute_or_call(table, "retained_metadata_history_complete")
+
+
+def _has_uninspected_metadata_log(table: Any) -> bool:
+    if _attribute_or_call(table, "metadata_history") is not None:
+        return False
+
+    metadata = _attribute_or_call(table, "metadata")
+    metadata_log = _mapping_or_attribute(metadata, "metadata_log")
+    return bool(metadata_log)
+
+
+def _schema_entries_from_current_metadata(metadata: Any) -> tuple[Any, ...]:
+    if metadata is None:
+        return ()
+    schemas = _mapping_or_attribute(metadata, "schemas") or ()
+    return tuple(
+        {
+            "schema": schema,
+            "properties": {},
+            "metadata_file": _metadata_entry_source(metadata),
+        }
+        for schema in schemas
+    )
+
+
+def _metadata_entries_from_metadata_log(
+    current_metadata: Any, metadata_log: Iterable[Any]
+) -> tuple[Any, ...]:
+    retained_entries = []
+    for log_entry in metadata_log:
+        metadata_file = _metadata_entry_source(log_entry)
+        retained_metadata = _load_retained_table_metadata(metadata_file)
+        if retained_metadata is not None:
+            retained_entries.append(
+                _metadata_entry_from_table_metadata(retained_metadata, metadata_file)
+            )
+
+    retained_entries.append(
+        _metadata_entry_from_table_metadata(
+            current_metadata, _metadata_entry_source(current_metadata)
+        )
+    )
+    return tuple(retained_entries)
+
+
+def _load_retained_table_metadata(metadata_file: str) -> Any:
+    try:
+        return _load_static_table(metadata_file).metadata
+    except Exception:
+        return None
+
+
+def _metadata_entry_from_table_metadata(metadata: Any, metadata_file: str) -> Any:
+    return {
+        "schema": _current_schema(metadata),
+        "properties": _mapping_or_attribute(metadata, "properties") or {},
+        "metadata_file": metadata_file,
+    }
+
+
+def _current_schema(metadata: Any) -> Any:
+    current_schema = _mapping_or_attribute(metadata, "current_schema")
+    if current_schema is not None:
+        return current_schema
+
+    schemas = tuple(_mapping_or_attribute(metadata, "schemas") or ())
+    current_schema_id = _mapping_or_attribute(metadata, "current_schema_id")
+    if current_schema_id is not None:
+        for schema in schemas:
+            if _schema_id(schema) == current_schema_id:
+                return schema
+    if schemas:
+        return schemas[-1]
+    return None
+
+
+def _schema_id(schema: Any) -> Any:
+    schema_id = _mapping_or_attribute(schema, "schema_id")
+    if schema_id is None:
+        schema_id = _mapping_or_attribute(schema, "schema-id")
+    if schema_id is None:
+        schema_id = _mapping_or_attribute(schema, "id")
+    return schema_id
+
+
+def _schema_fields(metadata_entry: Any) -> dict[Any, dict[str, str]]:
+    schema = _mapping_or_attribute(metadata_entry, "schema")
+    if schema is None:
+        return {}
+
+    fields = _mapping_or_attribute(schema, "fields") or ()
+    return {
+        _field_identity(field): {
+            "name": str(_mapping_or_attribute(field, "name")),
+            "type": str(_field_type(field)),
+            "doc": _field_doc(field),
+        }
+        for field in fields
+    }
+
+
+def _schema_changes(previous: Any, current: Any) -> tuple[EvolutionChange, ...]:
+    previous_fields = _schema_fields(previous)
+    current_fields = _schema_fields(current)
+    source = _metadata_entry_source(current)
+    changes = []
+
+    for field_id in current_fields.keys() - previous_fields.keys():
+        field = current_fields[field_id]
+        changes.append(
+            EvolutionChange(
+                change_type="added",
+                subject="schema.column",
+                name=field["name"],
+                before=None,
+                after=field["type"],
+                source=source,
+            )
+        )
+
+    for field_id in previous_fields.keys() - current_fields.keys():
+        field = previous_fields[field_id]
+        changes.append(
+            EvolutionChange(
+                change_type="removed",
+                subject="schema.column",
+                name=field["name"],
+                before=field["type"],
+                after=None,
+                source=source,
+            )
+        )
+
+    for field_id in previous_fields.keys() & current_fields.keys():
+        previous_field = previous_fields[field_id]
+        current_field = current_fields[field_id]
+        if previous_field["name"] != current_field["name"]:
+            changes.append(
+                EvolutionChange(
+                    change_type="renamed",
+                    subject="schema.column",
+                    name=current_field["name"],
+                    before=previous_field["name"],
+                    after=current_field["name"],
+                    source=source,
+                )
+            )
+        if previous_field["type"] != current_field["type"]:
+            changes.append(
+                EvolutionChange(
+                    change_type="type_changed",
+                    subject="schema.column",
+                    name=current_field["name"],
+                    before=previous_field["type"],
+                    after=current_field["type"],
+                    source=source,
+                )
+            )
+        if previous_field["doc"] != current_field["doc"]:
+            changes.append(
+                EvolutionChange(
+                    change_type="documentation_changed",
+                    subject="schema.column",
+                    name=current_field["name"],
+                    before=previous_field["doc"],
+                    after=current_field["doc"],
+                    source=source,
+                )
+            )
+
+    return tuple(
+        sorted(
+            changes,
+            key=lambda change: (
+                {
+                    "added": 0,
+                    "removed": 1,
+                    "renamed": 2,
+                    "type_changed": 3,
+                    "documentation_changed": 4,
+                }[change.change_type],
+                change.name,
+            ),
+        )
+    )
+
+
+def _field_identity(field: Any) -> Any:
+    field_id = _mapping_or_attribute(field, "id")
+    if field_id is None:
+        field_id = _mapping_or_attribute(field, "field_id")
+    if field_id is not None:
+        return field_id
+    return _mapping_or_attribute(field, "name")
+
+
+def _field_type(field: Any) -> Any:
+    field_type = _mapping_or_attribute(field, "type")
+    if field_type is not None:
+        return field_type
+    return _mapping_or_attribute(field, "field_type")
+
+
+def _field_doc(field: Any) -> Optional[str]:
+    doc = _mapping_or_attribute(field, "doc")
+    if doc is None:
+        return None
+    return str(doc)
+
+
+def _metadata_entry_source(metadata_entry: Any) -> str:
+    metadata_file = _mapping_or_attribute(metadata_entry, "metadata_file")
+    if metadata_file is None:
+        metadata_file = _mapping_or_attribute(metadata_entry, "metadata-file")
+    if metadata_file is None:
+        metadata_file = _mapping_or_attribute(metadata_entry, "location")
+    if metadata_file is not None:
+        return str(metadata_file)
+    return "iceberg.retained_metadata"
+
+
+def _property_changes(previous: Any, current: Any) -> tuple[EvolutionChange, ...]:
+    previous_properties = _properties(previous)
+    current_properties = _properties(current)
+    source = _metadata_entry_source(current)
+    changes = []
+
+    for name in sorted(current_properties.keys() - previous_properties.keys()):
+        changes.append(
+            EvolutionChange(
+                change_type="added",
+                subject="table.property",
+                name=name,
+                before=None,
+                after=current_properties[name],
+                source=source,
+            )
+        )
+
+    for name in sorted(previous_properties.keys() - current_properties.keys()):
+        changes.append(
+            EvolutionChange(
+                change_type="removed",
+                subject="table.property",
+                name=name,
+                before=previous_properties[name],
+                after=None,
+                source=source,
+            )
+        )
+
+    for name in sorted(previous_properties.keys() & current_properties.keys()):
+        previous_value = previous_properties[name]
+        current_value = current_properties[name]
+        if previous_value != current_value:
+            changes.append(
+                EvolutionChange(
+                    change_type="changed",
+                    subject="table.property",
+                    name=name,
+                    before=previous_value,
+                    after=current_value,
+                    source=source,
+                )
+            )
+
+    return tuple(changes)
+
+
+def _properties(metadata_entry: Any) -> dict[str, str]:
+    properties = _mapping_or_attribute(metadata_entry, "properties") or {}
+    return {str(key): str(value) for key, value in properties.items()}
+
+
+def _attribute_or_call(value: Any, name: str) -> Any:
+    attribute = getattr(value, name, None)
+    if callable(attribute):
+        return attribute()
+    return attribute
+
+
+def _mapping_or_attribute(value: Any, name: str) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return _attribute_or_call(value, name)
 
 
 def _utc_now() -> datetime:
