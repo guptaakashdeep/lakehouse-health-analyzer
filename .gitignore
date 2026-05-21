@@ -36,7 +36,4 @@ ENV/
 # Logs
 *.log 
 
-# TEMPORARY
-tests/*
 *.ipynb
-test_*.py

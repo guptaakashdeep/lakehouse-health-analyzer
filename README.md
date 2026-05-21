@@ -36,15 +36,14 @@ pip install lakehouse-health-analyzer
 
 ## Development Setup
 
-1. Clone the repository
-2. Create a virtual environment:
+1. Clone the repository.
+2. Sync the project environment with `uv`:
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   uv sync --extra dev
    ```
-3. Install development dependencies:
+3. Run commands through `uv run`:
    ```bash
-   pip install -e ".[dev]"
+   uv run pytest
    ```
 
 ## Usage
@@ -95,13 +94,13 @@ The easiest way to run the dashboard is using Streamlit:
 
 ```bash
 # From the project root
-streamlit run streamlit_app.py
+uv run streamlit run streamlit_app.py
 ```
 
 Alternatively, you can run the dashboard directly:
 
 ```bash
-python run_dashboard.py
+uv run python run_dashboard.py
 ```
 
 ## Project Structure

@@ -6,15 +6,15 @@ build-backend = "hatchling.build"
 name = "lakehouse-health-analyzer"
 version = "0.1.0"
 description = "A tool for analyzing lakehouse table health"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "boto3>=1.26.0",
-    "duckdb>=0.9.0",
+    "duckdb>=1.5.3",
     "fastapi>=0.100.0",
     "pandas>=2.0.0",
     "plotly>=5.18.0",
     "pydantic>=2.0.0",
-    "pyiceberg>=0.5.0",
+    "pyiceberg>=0.11.1",
     "requests>=2.31.0",
     "streamlit>=1.30.0",
     "uvicorn>=0.23.0",
@@ -26,18 +26,24 @@ dev = [
     "isort>=5.0.0",
     "mypy>=1.0.0",
     "pytest>=7.0.0",
+    "ruff>=0.11.0",
 ]
 
 [tool.black]
 line-length = 88
-target-version = ['py38']
+target-version = ['py310']
 
 [tool.isort]
 profile = "black"
 multi_line_output = 3
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = [
+    "src/analysis",
+    "src/analyzers",
+    "src/catalogs",
+    "src/visualization",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
