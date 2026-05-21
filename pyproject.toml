@@ -20,6 +20,9 @@ dependencies = [
     "uvicorn>=0.23.0",
 ]
 
+[project.scripts]
+lakehouse-health-operator = "operator_tui:main"
+
 [project.optional-dependencies]
 dev = [
     "black>=23.0.0",
@@ -44,12 +47,13 @@ packages = [
     "src/catalogs",
     "src/configuration",
     "src/operator_cache",
+    "src/operator_tui",
     "src/visualization",
 ]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["analyzers", "catalogs", "operator_cache", "visualization", "utils"]
+packages = ["analyzers", "catalogs", "operator_cache", "operator_tui", "visualization", "utils"]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "src"] 
