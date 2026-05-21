@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Any, Mapping, Optional, Tuple, Union
 
 
 MetricValue = Optional[Union[int, float, str]]
@@ -39,12 +39,23 @@ class CalculationWarning:
 
 
 @dataclass(frozen=True)
+class PartitionHealthMetric:
+    partition: Mapping[str, Any]
+    data_file_count: int
+    delete_file_count: int
+    total_data_file_size_bytes: MetricValue
+    average_data_file_size_bytes: MetricValue
+    source: str
+
+
+@dataclass(frozen=True)
 class TableHealthReport:
     table_name: str
     table_source: TableSource
     health_metrics: Tuple[HealthMetric, ...]
     display_statistics: Tuple[DisplayStatistic, ...]
     calculation_warnings: Tuple[CalculationWarning, ...] = ()
+    partition_metrics: Tuple[PartitionHealthMetric, ...] = ()
 
     def health_metric(self, key: str) -> HealthMetric:
         for metric in self.health_metrics:

@@ -1,9 +1,11 @@
 """Partition metrics component."""
 
-import streamlit as st
-import pandas as pd
-import plotly.express as px
 from typing import List
+
+try:
+    import streamlit as st
+except ModuleNotFoundError:
+    st = None
 
 
 def bytes_to_mb(bytes_value):
@@ -13,6 +15,15 @@ def bytes_to_mb(bytes_value):
 
 def display_partition_metrics(partition_metrics: List):
     """Display partition metrics in a dashboard."""
+    if st is None:
+        raise RuntimeError("Streamlit is required to render partition metrics.")
+
+    if hasattr(partition_metrics, "partition_metrics") and hasattr(
+        partition_metrics, "health_metric"
+    ):
+        _display_report_partition_metrics(partition_metrics)
+        return
+
     st.header("📊 Partition Metrics")
 
     if not partition_metrics:
@@ -51,6 +62,9 @@ def display_partition_metrics(partition_metrics: List):
     if not partition_data:
         st.warning("No partition data available")
         return
+
+    pd = _require_pandas()
+    px = _require_plotly_express()
 
     # Create a DataFrame from the partition data
     df = pd.DataFrame(partition_data)
@@ -125,7 +139,9 @@ def display_partition_metrics(partition_metrics: List):
 
         # Display the dataframe with a search box
         st.dataframe(
-            display_df, use_container_width=True, height=400  # Adjust height as needed
+            display_df,
+            use_container_width=True,
+            height=400,  # Adjust height as needed
         )
 
     with tab2:
@@ -244,3 +260,60 @@ def display_partition_metrics(partition_metrics: List):
                 st.info("The partition size distribution shows moderate skewness.")
             else:
                 st.success("The partition size distribution appears to be balanced.")
+
+
+def _display_report_partition_metrics(report):
+    st.subheader("Partition Metrics")
+
+    for metric_key in (
+        "partition_count",
+        "max_data_files_per_partition",
+        "high_file_count_partition_count",
+        "partition_size_skewness",
+    ):
+        try:
+            metric = report.health_metric(metric_key)
+        except KeyError:
+            continue
+        st.metric(metric.label, _format_report_metric_value(metric.value, metric.unit))
+
+    partition_rows = []
+    for metric in report.partition_metrics:
+        row = dict(metric.partition)
+        row.update(
+            {
+                "data_file_count": metric.data_file_count,
+                "delete_file_count": metric.delete_file_count,
+                "total_data_file_size_bytes": metric.total_data_file_size_bytes,
+                "average_data_file_size_bytes": metric.average_data_file_size_bytes,
+            }
+        )
+        partition_rows.append(row)
+
+    if partition_rows:
+        pd = _require_pandas()
+        st.dataframe(pd.DataFrame(partition_rows), use_container_width=True, height=400)
+
+
+def _format_report_metric_value(value, unit):
+    if value is None:
+        return "Unknown"
+    if unit:
+        return f"{value} {unit}"
+    return str(value)
+
+
+def _require_pandas():
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("pandas is required to render partition metrics.") from exc
+    return pd
+
+
+def _require_plotly_express():
+    try:
+        import plotly.express as px
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("plotly is required to render partition charts.") from exc
+    return px
