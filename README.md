@@ -33,15 +33,15 @@ Out of scope for this version:
 
 ```mermaid
 flowchart TD
-    M[Metadata File<br/>metadata.json path]
-    G[AWS Glue Catalog<br/>PyIceberg table loading]
-    C[AnalyzerConfiguration.from_environment()<br/>centralized runtime/config policy]
-    A[Analysis Core<br/>canonical TableHealthReport]
-    D[DuckDB Cache<br/>catalog overview cache]
-    S[Streamlit Dashboard<br/>overview table + metadata-file full report]
-    O[Operator CLI<br/>lakehouse-health-operator --inspect]
-    J[JSON Export]
-    MD[Markdown Export]
+    M["Metadata File<br/>metadata.json path"]
+    G["AWS Glue Catalog<br/>PyIceberg table loading"]
+    C["AnalyzerConfiguration.from_environment<br/>centralized runtime and config policy"]
+    A["Analysis Core<br/>canonical TableHealthReport"]
+    D["DuckDB Cache<br/>catalog overview cache"]
+    S["Streamlit Dashboard<br/>overview table and metadata-file full report"]
+    O["Operator CLI<br/>lakehouse-health-operator --inspect"]
+    J["JSON Export"]
+    MD["Markdown Export"]
 
     M --> C
     G --> C
