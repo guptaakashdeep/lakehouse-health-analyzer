@@ -10,12 +10,17 @@ from analysis.report import (
     TableSource,
 )
 from configuration import AnalyzerConfiguration, GlueCatalogTableSourceConfiguration
-from visualization.table_health_report import display_table_health_report
+from visualization.table_health_report import (
+    display_table_detail_view,
+    display_table_health_report,
+)
+from workflows.table_detail import TableDetailSection, TableDetailView, table_detail_view
 
 
 class FakeStreamlit:
     def __init__(self):
         self.headers = []
+        self.subheaders = []
         self.metrics = []
         self.warnings = []
         self.infos = []
@@ -27,7 +32,7 @@ class FakeStreamlit:
         self.headers.append(text)
 
     def subheader(self, text):
-        self.headers.append(text)
+        self.subheaders.append(text)
 
     def metric(self, label, value):
         self.metrics.append((label, value))
@@ -57,50 +62,60 @@ class FakePartitionStreamlit(FakeStreamlit):
         self.dataframes.append(value)
 
 
-def test_streamlit_report_renderer_consumes_report_values(monkeypatch):
+def test_streamlit_renderer_displays_prepared_table_detail_view(monkeypatch):
+    fake_st = FakePartitionStreamlit()
+    monkeypatch.setattr("visualization.table_health_report.st", fake_st)
+
+    view = table_detail_view(_detailed_report())
+
+    display_table_detail_view(view)
+
+    assert fake_st.headers == ["Table: sales.orders"]
+    assert fake_st.subheaders[:4] == [
+        "Recommendations",
+        "Warnings",
+        "Files",
+        "Records",
+    ]
+    assert fake_st.errors == [
+        "Compaction (critical): Compact clustered small files.",
+    ]
+    assert fake_st.warnings == [
+        "partition_size_skewness: Partition sizes were incomplete.",
+    ]
+    assert ("Data File Count", "7 files") in fake_st.metrics
+    assert ("Total File Size", "12 MiB") in fake_st.metrics
+    assert fake_st.captions == [
+        "Evidence: high_file_count_partition_count=2",
+        "Thresholds: high_file_count_partition_count_critical=2",
+    ]
+
+
+def test_streamlit_report_renderer_delegates_to_shared_table_detail_view_builder(
+    monkeypatch,
+):
     fake_st = FakeStreamlit()
     monkeypatch.setattr("visualization.table_health_report.st", fake_st)
 
-    report = TableHealthReport(
+    builder_calls = []
+    prepared = TableDetailView(
         table_name="warehouse.sales.orders",
-        table_source=TableSource(
-            kind="metadata_file", location="/tmp/orders.metadata.json"
-        ),
-        health_metrics=(
-            HealthMetric(
-                key="total_file_size_bytes",
-                label="Total File Size Bytes",
-                value=999,
-                unit="bytes",
-                source="test",
-            ),
-        ),
-        display_statistics=(
-            DisplayStatistic(
-                key="total_file_size",
-                label="Total File Size",
-                value="rendered by report",
-                derived_from=("total_file_size_bytes",),
-            ),
-        ),
-        calculation_warnings=(
-            CalculationWarning(
-                metric_key="total_file_size_bytes",
-                message="size is incomplete",
+        sections=(
+            TableDetailSection(
+                key="records",
+                title="Records",
+                items=(),
             ),
         ),
     )
 
-    display_table_health_report(report)
+    def fake_builder(report):
+        builder_calls.append(report.table_name)
+        return prepared
 
-    assert ("Total File Size Bytes", "999 bytes") in fake_st.metrics
-    assert ("Total File Size", "rendered by report") in fake_st.metrics
-    assert fake_st.warnings == ["total_file_size_bytes: size is incomplete"]
-
-
-def test_streamlit_report_renderer_displays_maintenance_recommendations(monkeypatch):
-    fake_st = FakeStreamlit()
-    monkeypatch.setattr("visualization.table_health_report.st", fake_st)
+    monkeypatch.setattr(
+        "visualization.table_health_report.table_detail_view", fake_builder
+    )
 
     report = TableHealthReport(
         table_name="warehouse.sales.orders",
@@ -109,36 +124,21 @@ def test_streamlit_report_renderer_displays_maintenance_recommendations(monkeypa
         ),
         health_metrics=(),
         display_statistics=(),
-        maintenance_recommendations=(
-            MaintenanceRecommendation(
-                recommendation_type="compaction",
-                severity="critical",
-                evidence={"high_file_count_partition_count": 5},
-                thresholds={"high_file_count_partition_count_critical": 5},
-                rationale="Compact high file-count partitions.",
-            ),
-        ),
     )
 
     display_table_health_report(report)
 
-    assert "Maintenance Recommendations" in fake_st.headers
-    assert fake_st.errors == [
-        "Compaction (critical): Compact high file-count partitions."
-    ]
-    assert fake_st.captions == [
-        "Evidence: high_file_count_partition_count=5",
-        "Thresholds: high_file_count_partition_count_critical=5",
-    ]
+    assert builder_calls == ["warehouse.sales.orders"]
+    assert fake_st.headers == ["Table: warehouse.sales.orders"]
+    assert fake_st.subheaders == ["Records"]
 
 
-def test_streamlit_report_renderer_displays_partition_report_values(monkeypatch):
+def test_streamlit_report_renderer_displays_metadata_and_partition_rows(monkeypatch):
     fake_st = FakePartitionStreamlit()
     monkeypatch.setattr("visualization.table_health_report.st", fake_st)
-    monkeypatch.setattr("visualization.components.partition_metrics.st", fake_st)
 
     report = TableHealthReport(
-        table_name="warehouse.sales.orders",
+        table_name="sales.orders",
         table_source=TableSource(
             kind="metadata_file", location="/tmp/orders.metadata.json"
         ),
@@ -169,35 +169,6 @@ def test_streamlit_report_renderer_displays_partition_report_values(monkeypatch)
                 source="iceberg.inspect.partitions",
             ),
         ),
-    )
-
-    display_table_health_report(report)
-
-    assert ("Partition Count", "2 partitions") in fake_st.metrics
-    assert ("High File Count Partition Count", "1 partitions") in fake_st.metrics
-    assert fake_st.dataframes
-    assert fake_st.dataframes[0].to_dict("records") == [
-        {
-            "region": "east",
-            "data_file_count": 4,
-            "delete_file_count": 1,
-            "total_data_file_size_bytes": 400,
-            "average_data_file_size_bytes": 100,
-        }
-    ]
-
-
-def test_streamlit_report_renderer_displays_table_evolution_history(monkeypatch):
-    fake_st = FakePartitionStreamlit()
-    monkeypatch.setattr("visualization.table_health_report.st", fake_st)
-
-    report = TableHealthReport(
-        table_name="warehouse.sales.orders",
-        table_source=TableSource(
-            kind="metadata_file", location="/tmp/orders.metadata.json"
-        ),
-        health_metrics=(),
-        display_statistics=(),
         table_evolution_history=TableEvolutionHistory(
             schema_changes=(
                 EvolutionChange(
@@ -224,8 +195,21 @@ def test_streamlit_report_renderer_displays_table_evolution_history(monkeypatch)
 
     display_table_health_report(report)
 
-    assert "Table Evolution History" in fake_st.headers
+    assert "Metadata and Evolution" in fake_st.subheaders
+    assert "Partitions" in fake_st.subheaders
+    assert ("Partition Count", "2 partitions") in fake_st.metrics
+    assert ("High File Count Partition Count", "1 partitions") in fake_st.metrics
+    assert len(fake_st.dataframes) == 2
     assert fake_st.dataframes[0].to_dict("records") == [
+        {
+            "region": "east",
+            "data_file_count": 4,
+            "delete_file_count": 1,
+            "total_data_file_size_bytes": 400,
+            "average_data_file_size_bytes": 100,
+        }
+    ]
+    assert fake_st.dataframes[1].to_dict("records") == [
         {
             "change_type": "added",
             "subject": "schema.column",
@@ -365,3 +349,59 @@ def test_streamlit_catalog_listing_rejects_hierarchical_glue_namespace():
         assert "single namespace component" in str(exc)
     else:
         raise AssertionError("Expected hierarchical Glue namespace to be rejected")
+
+
+def _detailed_report() -> TableHealthReport:
+    return TableHealthReport(
+        table_name="sales.orders",
+        table_source=TableSource(kind="glue_catalog_table", location="sales.orders"),
+        health_metrics=(
+            HealthMetric(
+                key="data_file_count",
+                label="Data File Count",
+                value=7,
+                unit="files",
+                source="test.files",
+            ),
+            HealthMetric(
+                key="data_file_record_count",
+                label="Data File Record Count",
+                value=1200,
+                unit="records",
+                source="test.records",
+            ),
+        ),
+        display_statistics=(
+            DisplayStatistic(
+                key="total_file_size",
+                label="Total File Size",
+                value="12 MiB",
+                derived_from=("total_file_size_bytes",),
+            ),
+        ),
+        maintenance_recommendations=(
+            MaintenanceRecommendation(
+                recommendation_type="compaction",
+                severity="critical",
+                evidence={"high_file_count_partition_count": 2},
+                thresholds={"high_file_count_partition_count_critical": 2},
+                rationale="Compact clustered small files.",
+            ),
+        ),
+        calculation_warnings=(
+            CalculationWarning(
+                metric_key="partition_size_skewness",
+                message="Partition sizes were incomplete.",
+            ),
+        ),
+        partition_metrics=(
+            PartitionHealthMetric(
+                partition={"region": "east"},
+                data_file_count=4,
+                delete_file_count=1,
+                total_data_file_size_bytes=400,
+                average_data_file_size_bytes=100,
+                source="test.partitions",
+            ),
+        ),
+    )

@@ -43,7 +43,7 @@ flowchart TD
     A["Analysis Core<br/>canonical TableHealthReport"]
     D["DuckDB Cache<br/>catalog overview cache"]
     S["Streamlit Dashboard<br/>overview table and metadata-file full report"]
-    O["Operator CLI<br/>lakehouse-health-operator --inspect"]
+    O["Operator TUI and CLI<br/>lh / report"]
     J["JSON Export"]
     MD["Markdown Export"]
 
@@ -77,7 +77,7 @@ catalog-scoped grouping that contains tables. In AWS Glue, this is the Glue
 database, so Glue-facing UI may label the same value as "Database" for
 readability.
 
-The planned setup command saves reusable defaults to
+The setup command saves reusable defaults to
 `${XDG_CONFIG_HOME:-~/.config}/lakehouse-health-analyzer/config.toml`.
 Configuration precedence is:
 
@@ -127,20 +127,20 @@ In the UI you can:
 
 The current Streamlit catalog view is an overview table. Full catalog-table drilldown is tracked separately from this version's completed scope.
 
-## Run operator workflow
+## Run Operator Workflow
 
-The planned default operator command should open the interactive Textual TUI:
-
-```bash
-uv run lakehouse-health-operator
-```
-
-Setup and report export should use explicit subcommands:
+Run setup once to save reusable Glue catalog defaults:
 
 ```bash
 uv run lakehouse-health-operator setup
-uv run lakehouse-health-operator report sales.orders --format json
-uv run lakehouse-health-operator report sales.orders --format markdown
+```
+
+The default operator command opens the interactive Textual TUI. `lh` is the
+short alias for the same entry point:
+
+```bash
+uv run lakehouse-health-operator
+uv run lh
 ```
 
 Example environment for Glue catalog workflow:
@@ -152,29 +152,21 @@ export LHA_GLUE_NAMESPACE=sales
 export LHA_GLUE_TABLE_NAME=orders
 ```
 
-List catalog overview:
+In the TUI you can browse catalog namespaces, load tables, analyze a selected
+table, refresh visible catalog/table data, and export the selected report.
+
+Generate non-interactive reports with the explicit `report` subcommand:
 
 ```bash
-uv run lakehouse-health-operator
-```
-
-Inspect a selected table:
-
-```bash
-uv run lakehouse-health-operator --inspect sales.orders
-```
-
-Force refresh or bypass cache:
-
-```bash
-uv run lakehouse-health-operator --refresh
-uv run lakehouse-health-operator --no-cache
+uv run lakehouse-health-operator report sales.orders --format json
+uv run lakehouse-health-operator report sales.orders --format markdown
+uv run lh report sales.orders --format json
 ```
 
 Interactive TUI behavior, layout, styling, and key bindings are captured in
 [docs/operator-tui-modernization.md](docs/operator-tui-modernization.md).
 
-## Cache behavior
+## Cache Behavior
 
 - Backend: DuckDB
 - Default path: `${XDG_CACHE_HOME:-~/.cache}/lakehouse-health-analyzer/catalog-overview.duckdb`
@@ -183,14 +175,14 @@ Interactive TUI behavior, layout, styling, and key bindings are captured in
 - Operator-facing values may be cached when they are visibly marked as cached
   and refreshable.
 
-## Export workflow
+## Export Workflow
 
-Enable exports through output policy environment variables:
+Enable default export destinations through output policy environment variables:
 
 ```bash
 export LHA_EXPORT_FORMATS=json,markdown
 export LHA_EXPORT_DIRECTORY=/tmp/lha-exports
-uv run lakehouse-health-operator --inspect sales.orders
+uv run lakehouse-health-operator report sales.orders --format json,markdown
 ```
 
 Exports are written as:
@@ -202,20 +194,19 @@ For example, `sales.orders` exports to `sales-orders.json` and `sales-orders.md`
 
 JSON preserves the canonical report structure. Markdown is a readable summary with source, cache/analyzed metadata, health metrics, warnings, and recommendation summaries.
 
-`LHA_EXPORT_DIRECTORY` must already exist.
-
-The planned report command should accept a namespace-qualified table identifier
-and use the configured catalog:
+`LHA_EXPORT_DIRECTORY` must already exist. You can also pass an explicit output
+path or output directory:
 
 ```bash
 uv run lakehouse-health-operator report sales.orders --format json
 uv run lakehouse-health-operator report sales.orders --format markdown
 uv run lakehouse-health-operator report sales.curated.orders --format json
 uv run lakehouse-health-operator report sales.orders --format json --output /tmp/sales-orders.json
+uv run lakehouse-health-operator report sales.orders --format json,markdown --output-dir /tmp/lha-exports
 ```
 
 The final identifier segment is the table name; earlier segments make up the
-catalog namespace. The report command should print JSON or Markdown to stdout
+catalog namespace. The report command prints JSON or Markdown to stdout
 by default, and write a file only when an explicit output path or configured
 output policy requests it.
 

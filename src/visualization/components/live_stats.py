@@ -7,8 +7,6 @@ def display_live_stats(live_table_metrics):
     """Display live table statistics in a dashboard."""
     st.header("🔴 Live Table Stats")
 
-    print("displaying_live_stats() -> ", live_table_metrics)
-
     # Create three columns for live metrics
     col1, col2, col3 = st.columns(3)
 
@@ -40,4 +38,4 @@ def display_live_stats(live_table_metrics):
         )
     ])
     fig.update_layout(title="Live Files Distribution")
-    st.plotly_chart(fig) 
+    st.plotly_chart(fig)

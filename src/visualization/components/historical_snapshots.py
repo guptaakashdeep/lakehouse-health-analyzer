@@ -4,7 +4,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
-from typing import List, Dict, Any
 
 
 def display_historical_snapshots(historical_snapshots, table_name=None):
@@ -331,4 +330,4 @@ def display_historical_details(df, historical_snapshots, table_name, snapshot_se
         
     # Clear the last interaction flag after displaying
     if "last_snapshot_change" in st.session_state:
-        st.session_state.pop("last_snapshot_change") 
+        st.session_state.pop("last_snapshot_change")

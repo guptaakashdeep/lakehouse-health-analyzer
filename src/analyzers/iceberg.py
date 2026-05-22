@@ -117,8 +117,6 @@ class IcebergAnalyzer(BaseAnalyzer):
         # Get historical snapshots for timeline visualization
         historical_snapshots = self.get_historical_snapshots(limit=20)
 
-        print("get_table_metrics() ->", self.table_name)
-
         return TableMetadataMetrics(
             table_name=self.table_name,
             live_table_metrics=live_table_metrics,
@@ -130,7 +128,7 @@ class IcebergAnalyzer(BaseAnalyzer):
 
     def get_live_table_metrics(self) -> LiveTableMetrics:
         """Get current table state metrics."""
-        pa_files = self.table.inspect.files()
+        self.duckdb.register("pa_files", self.table.inspect.files())
 
         # Query to get data file and delete file counts and sizes
         live_table_sql = """
@@ -206,8 +204,7 @@ class IcebergAnalyzer(BaseAnalyzer):
         Returns:
             List of dictionaries containing snapshot details and metrics
         """
-        # Get all snapshots from the table
-        pa_snapshots = self.table.inspect.snapshots()
+        self.duckdb.register("pa_snapshots", self.table.inspect.snapshots())
         
         metrics_col_str = self._get_snapshot_metrics_col(
             additional_metrics=[
@@ -248,11 +245,9 @@ class IcebergAnalyzer(BaseAnalyzer):
     def get_snapshot_metrics(self, snapshot_id: int) -> SnapshotMetrics:
         """Get snapshot-related metrics for the latest snapshot using DuckDB and PyArrow."""
         if not snapshot_id:
-            print("No snapshot id found. Returning empty snapshot metrics.")
             return self._get_empty_snapshot_metrics()
 
-        # Get snapshot metrics from the summary
-        pa_snapshots = self.table.inspect.snapshots()
+        self.duckdb.register("pa_snapshots", self.table.inspect.snapshots())
 
         # Create SQL query with COALESCE for null handling
         metrics_col_str = self._get_snapshot_metrics_col()
@@ -309,7 +304,7 @@ class IcebergAnalyzer(BaseAnalyzer):
 
     def get_file_metrics(self) -> Dict[str, Any]:
         """Get file-related metrics including aggregated stats."""
-        pa_files = self.table.inspect.files()
+        self.duckdb.register("pa_files", self.table.inspect.files())
 
         files_sql = """SELECT content,
                 count(*) as file_count,
@@ -343,8 +338,7 @@ class IcebergAnalyzer(BaseAnalyzer):
 
     def get_partition_metrics(self) -> List[PartitionMetrics]:
         """Get detailed partition statistics for an Iceberg table."""
-        iceberg_table = self.table
-        pa_partitions = iceberg_table.inspect.partitions()
+        self.duckdb.register("pa_partitions", self.table.inspect.partitions())
 
         # Use DuckDB to analyze partition statistics
         part_stats = self.duckdb.sql("""

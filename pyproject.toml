@@ -16,12 +16,15 @@ dependencies = [
     "pydantic>=2.0.0",
     "pyiceberg>=0.11.1",
     "requests>=2.31.0",
+    "rich>=14.3.4",
     "streamlit>=1.30.0",
+    "textual>=8.2.7",
     "uvicorn>=0.23.0",
 ]
 
 [project.scripts]
 lakehouse-health-operator = "operator_tui:main"
+lh = "operator_tui:main"
 
 [project.optional-dependencies]
 dev = [
@@ -58,12 +61,13 @@ packages = [
     "src/operator_cache",
     "src/operator_tui",
     "src/report_exports",
+    "src/workflows",
     "src/visualization",
 ]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["analyzers", "catalogs", "operator_cache", "operator_tui", "report_exports", "visualization", "utils"]
+packages = ["analyzers", "catalogs", "operator_cache", "operator_tui", "report_exports", "visualization", "workflows", "utils"]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "src"] 

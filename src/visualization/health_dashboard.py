@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from typing import Dict, Any
 
 from analyzers.base import TableHealthMetrics
 
@@ -91,4 +90,4 @@ def show_dashboard(metrics: TableHealthMetrics):
         snapshots_df["timestamp"] = pd.to_datetime(snapshots_df["timestamp_ms"], unit="ms")
         st.dataframe(snapshots_df)
     else:
-        st.success("No expirable snapshots found") 
+        st.success("No expirable snapshots found")

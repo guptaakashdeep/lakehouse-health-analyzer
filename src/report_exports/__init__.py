@@ -29,6 +29,28 @@ def export_table_health_report(
             f"Export destination directory does not exist: {parent}"
         )
 
+    output_path.write_text(
+        render_table_health_report(
+            report,
+            export_format=normalized_format,
+            cache_status=cache_status,
+            analyzed_at=analyzed_at,
+        )
+    )
+    return output_path
+
+
+def render_table_health_report(
+    report: TableHealthReport,
+    *,
+    export_format: str,
+    cache_status: str,
+    analyzed_at: datetime,
+) -> str:
+    normalized_format = export_format.strip().lower()
+    if normalized_format not in {"json", "markdown"}:
+        raise ValueError(f"Unsupported export format: {export_format}")
+
     export_metadata = {
         "cache_status": cache_status,
         "analyzed_at": analyzed_at.isoformat(),
@@ -36,10 +58,8 @@ def export_table_health_report(
     if normalized_format == "json":
         payload = _json_safe(asdict(report))
         payload["export_metadata"] = export_metadata
-        output_path.write_text(json.dumps(payload, indent=2))
-    else:
-        output_path.write_text(_render_markdown_report(report, export_metadata))
-    return output_path
+        return json.dumps(payload, indent=2)
+    return _render_markdown_report(report, export_metadata)
 
 
 def export_table_health_report_for_output_policy(

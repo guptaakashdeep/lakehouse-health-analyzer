@@ -1,7 +1,12 @@
 from datetime import datetime, timedelta, timezone
 
-from operator_cache import CatalogOverviewCache, default_catalog_overview_cache_path
+from operator_cache import (
+    CatalogOverviewCache,
+    OperatorCache,
+    default_catalog_overview_cache_path,
+)
 from visualization.catalog_overview import CatalogOverview
+from workflows.catalog_browser import TableFormatClassification
 
 
 def test_catalog_overview_cache_writes_and_reads_cached_overview(tmp_path):
@@ -121,4 +126,36 @@ def test_default_catalog_overview_cache_path_uses_user_cache_directory(
         / "cache-home"
         / "lakehouse-health-analyzer"
         / "catalog-overview.duckdb"
+    )
+
+
+def test_operator_cache_caches_table_classification_until_ttl_expires(tmp_path):
+    written_at = datetime(2026, 5, 21, 8, 30, tzinfo=timezone.utc)
+    current_time = written_at
+    cache = OperatorCache(
+        tmp_path / "operator-cache.duckdb",
+        ttl_seconds=60,
+        now=lambda: current_time,
+    )
+
+    cache.write_table_classification(
+        "analytics:sales.orders",
+        TableFormatClassification.ICEBERG,
+        "glue_parameters",
+    )
+
+    cached = cache.read_table_classification("analytics:sales.orders")
+
+    assert cached is not None
+    assert cached.table_format == TableFormatClassification.ICEBERG
+    assert cached.classification_source == "glue_parameters"
+    assert cached.cache_status == "cached"
+    assert cached.cached_at == written_at
+
+    current_time = written_at + timedelta(seconds=61)
+
+    assert cache.read_table_classification("analytics:sales.orders") is None
+    assert (
+        cache.read_stale_table_classification("analytics:sales.orders").cache_status
+        == "stale"
     )

@@ -1,6 +1,8 @@
 import io
 import time
+import tomllib
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -26,8 +28,10 @@ from operator_tui import (
     OperatorCatalogWorkflow,
     configured_operator_catalog_workflow,
     list_configured_catalog_tables,
+    main,
     run_operator_catalog_workflow,
 )
+from workflows.errors import UnsupportedTableError
 
 
 def test_operator_catalog_overview_lists_tables_with_headline_metrics():
@@ -47,6 +51,64 @@ def test_operator_catalog_overview_lists_tables_with_headline_metrics():
     assert overview.rows[0]["cache_status"] == "fresh"
     assert overview.rows[0]["data_file_count"] == 7
     assert "sales.orders" in workflow.render_overview(overview)
+
+
+def test_operator_cli_default_routes_to_tui_bootstrap(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        "operator_tui._run_textual_tui_bootstrap",
+        lambda *, command_name, output, error: calls.append(command_name) or 0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "operator_tui.AnalyzerConfiguration.from_environment",
+        lambda: pytest.fail("default CLI should not use legacy env workflow"),
+    )
+
+    assert main([]) == 0
+    assert calls == ["lakehouse-health-operator"]
+
+
+def test_operator_cli_default_shows_setup_needed_when_unconfigured(
+    monkeypatch, capsys
+):
+    monkeypatch.delenv("LHA_METADATA_LOCATION", raising=False)
+    monkeypatch.delenv("LHA_GLUE_CATALOG_NAME", raising=False)
+    monkeypatch.delenv("LHA_TABLE_SOURCE_KIND", raising=False)
+    monkeypatch.setenv("HOME", "/tmp/lha-home-missing-config")
+
+    assert main([]) == 2
+
+    output = capsys.readouterr()
+    assert "Setup is required" in output.err
+    assert "lakehouse-health-operator setup" in output.err
+
+
+def test_operator_cli_rejects_removed_legacy_flags(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "operator_tui._run_textual_tui_bootstrap",
+        lambda **_: pytest.fail("removed legacy flags should not start the TUI"),
+    )
+    monkeypatch.setattr(
+        "operator_tui.AnalyzerConfiguration.from_environment",
+        lambda: pytest.fail("removed legacy flags should not read configuration"),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--refresh"])
+
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments: --refresh" in capsys.readouterr().err
+
+
+def test_operator_cli_scripts_define_short_alias_to_same_entrypoint():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as config_file:
+        scripts = tomllib.load(config_file)["project"]["scripts"]
+
+    assert scripts["lakehouse-health-operator"] == "operator_tui:main"
+    assert scripts["lh"] == scripts["lakehouse-health-operator"]
 
 
 def test_operator_catalog_overview_shows_snapshot_and_recommendation_counts():
@@ -122,20 +184,20 @@ def test_operator_catalog_overview_uses_configured_concurrency_limit(tmp_path):
 def test_operator_catalog_overview_marks_table_timeout_as_warning():
     def analyze_table(table_name):
         if table_name == "sales.slow":
-            time.sleep(0.02)
+            time.sleep(0.2)
         return _report(table_name)
 
     workflow = OperatorCatalogWorkflow(
         list_catalog_tables=lambda: ("sales.fast", "sales.slow"),
         analyze_table=analyze_table,
-        runtime=RuntimePolicy(max_concurrency=2, timeout_seconds=0.001),
+        runtime=RuntimePolicy(max_concurrency=2, timeout_seconds=0.05),
     )
 
     overview = workflow.load_overview()
 
     assert overview.rows[0]["status"] == "loaded"
     assert overview.rows[1]["status"] == "warning"
-    assert overview.rows[1]["message"] == "table analysis timed out after 0.001s"
+    assert overview.rows[1]["message"] == "table analysis timed out after 0.05s"
     assert overview.failure_count == 1
 
 
@@ -342,6 +404,36 @@ def test_operator_catalog_workflow_export_marks_fresh_selected_report_metadata(
     assert (
         overview_analyzed_at.isoformat()
         not in (tmp_path / "sales-orders.json").read_text()
+    )
+
+
+def test_operator_catalog_workflow_returns_nonzero_for_unsupported_selected_table():
+    workflow = OperatorCatalogWorkflow(
+        list_catalog_tables=lambda: ("sales.orders", "sales.legacy_view"),
+        analyze_table=lambda table_name: (
+            _report(table_name)
+            if table_name == "sales.orders"
+            else (_ for _ in ()).throw(
+                UnsupportedTableError("table is not an iceberg table")
+            )
+        ),
+    )
+    output = io.StringIO()
+    error = io.StringIO()
+
+    exit_code = run_operator_catalog_workflow(
+        workflow,
+        inspect_table="sales.legacy_view",
+        output=output,
+        error=error,
+    )
+
+    assert exit_code == 2
+    assert "Table | Status | Cache" in output.getvalue()
+    assert "sales.legacy_view" in output.getvalue()
+    assert (
+        "Unsupported table sales.legacy_view: table is not an iceberg table"
+        in error.getvalue()
     )
 
 

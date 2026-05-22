@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing
+import os
 import signal
 import sys
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from queue import Empty
 from time import monotonic, sleep
 from typing import Callable, Mapping, Protocol, Sequence, TextIO
@@ -20,6 +22,10 @@ from configuration import (
     RuntimePolicy,
 )
 from report_exports import export_table_health_report_for_output_policy
+from workflows.report_command import configured_report_command_workflow
+from workflows.report_command import parse_report_formats
+from workflows.report_command import run_report_command_workflow
+from workflows.errors import UnsupportedTableError
 
 
 @dataclass(frozen=True)
@@ -292,15 +298,23 @@ def run_operator_catalog_workflow(
     *,
     inspect_table: str | None = None,
     output: TextIO | None = None,
+    error: TextIO | None = None,
     output_policy: OutputPolicy | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> int:
     stream = output or sys.stdout
+    error_stream = error or sys.stderr
     overview = workflow.load_overview()
     stream.write(workflow.render_overview(overview))
     stream.write("\n")
     if inspect_table is not None:
-        report = workflow.inspect_table(inspect_table)
+        try:
+            report = workflow.inspect_table(inspect_table)
+        except UnsupportedTableError as exc:
+            error_stream.write(
+                f"Unsupported table {inspect_table}: {_error_message(exc)}\n"
+            )
+            return 2
         analyzed_at = (now or (lambda: datetime.now(timezone.utc)))()
         stream.write("\n")
         stream.write(workflow.render_table_health_report(report))
@@ -315,50 +329,120 @@ def run_operator_catalog_workflow(
     return 0
 
 
+def run_setup_command(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="lakehouse-health-operator setup",
+        description="Configure AWS Glue defaults and write config.toml.",
+    )
+    parser.parse_args(argv)
+
+    from rich.console import Console
+    from workflows.setup import (
+        RichSetupPrompter,
+        default_aws_config_path,
+        default_setup_config_path,
+        run_setup_workflow,
+        validate_glue_catalog_selection,
+    )
+
+    console = Console()
+    run_setup_workflow(
+        config_path=default_setup_config_path(dict(os.environ)),
+        aws_config_path=default_aws_config_path(dict(os.environ)),
+        prompter=RichSetupPrompter(console=console),
+        validate_selection=validate_glue_catalog_selection,
+        emit_message=console.print,
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    command_argv = list(argv) if argv is not None else sys.argv[1:]
+    if command_argv and command_argv[0] == "setup":
+        return run_setup_command(command_argv[1:])
+    if command_argv and command_argv[0] == "report":
+        return run_report_command(command_argv[1:])
+
     parser = argparse.ArgumentParser(
         prog="lakehouse-health-operator",
         description="List configured catalog tables and inspect table health reports.",
     )
-    parser.add_argument(
-        "--inspect",
-        metavar="TABLE",
-        help="Render the detailed Table Health Report for a selected table.",
+    parser.parse_args(command_argv)
+
+    return _run_textual_tui_bootstrap(
+        command_name=parser.prog,
+        output=sys.stdout,
+        error=sys.stderr,
+    )
+
+
+def run_report_command(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="lakehouse-health-operator report",
+        description="Render fresh table health reports in JSON or Markdown.",
     )
     parser.add_argument(
-        "--refresh",
-        action="store_true",
-        help="Bypass and replace the cached catalog overview.",
+        "table_identifier",
+        metavar="NAMESPACE.TABLE",
+        help=(
+            "Namespace-qualified table identifier. "
+            "Use dots for namespace segments (for example: sales.orders)."
+        ),
     )
     parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="Disable the DuckDB operator overview cache for this run.",
+        "--format",
+        default=None,
+        help="Output format, or comma-separated formats (json, markdown).",
+    )
+    parser.add_argument(
+        "--output",
+        help="Exact output file path for a single format export.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="Output directory for generated report file names.",
     )
     args = parser.parse_args(argv)
 
     config = AnalyzerConfiguration.from_environment()
-    cache = None
-    if not args.no_cache:
-        from operator_cache import (
-            CatalogOverviewCache,
-            default_catalog_overview_cache_path,
-        )
-
-        cache = CatalogOverviewCache(
-            default_catalog_overview_cache_path(),
-            ttl_seconds=config.runtime.cache_ttl_seconds,
-        )
-    workflow = configured_operator_catalog_workflow(
-        config,
-        cache=cache,
-        refresh=args.refresh,
-    )
-    return run_operator_catalog_workflow(
+    workflow = configured_report_command_workflow(config)
+    formats = parse_report_formats(args.format)
+    if not formats:
+        formats = config.output.export_formats or ("json",)
+    return run_report_command_workflow(
         workflow,
-        inspect_table=args.inspect,
-        output_policy=config.output,
+        table_identifier=args.table_identifier,
+        formats=formats,
+        output=sys.stdout,
+        error=sys.stderr,
+        output_path=args.output,
+        output_directory=args.output_dir,
+        configured_output_directory=config.output.export_directory,
+        configured_formats=config.output.export_formats,
     )
+
+
+def _run_textual_tui_bootstrap(
+    *, command_name: str, output: TextIO, error: TextIO
+) -> int:
+    if not _operator_setup_is_configured():
+        error.write(_setup_needed_message(command_name))
+        error.write("\n")
+        return 2
+    from .app import configured_operator_catalog_browser_app
+
+    try:
+        app = configured_operator_catalog_browser_app(
+            AnalyzerConfiguration.from_environment()
+        )
+    except (KeyError, ValueError) as exc:
+        error.write(_setup_needed_message(command_name))
+        error.write("\n")
+        error.write(str(exc))
+        error.write("\n")
+        return 2
+    app.run()
+    return 0
 
 
 _OVERVIEW_COLUMNS = (
@@ -674,3 +758,37 @@ def _format_mapping(values: Mapping[str, object]) -> str:
 
 def _format_recommendation_type(recommendation_type: str) -> str:
     return recommendation_type.replace("_", " ").title()
+
+
+def _error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    if message:
+        return message
+    return exc.__class__.__name__
+
+
+def _operator_setup_is_configured(
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    values = os.environ if environ is None else environ
+    if _operator_config_path(values).exists():
+        return True
+    if values.get("LHA_METADATA_LOCATION"):
+        return True
+    if values.get("LHA_GLUE_CATALOG_NAME"):
+        return True
+    return False
+
+
+def _operator_config_path(environ: Mapping[str, str]) -> Path:
+    config_home = environ.get("XDG_CONFIG_HOME")
+    if not config_home:
+        config_home = str(Path.home() / ".config")
+    return Path(config_home) / "lakehouse-health-analyzer" / "config.toml"
+
+
+def _setup_needed_message(command_name: str) -> str:
+    return (
+        "Setup is required before launching the operator TUI.\n"
+        f"Run `{command_name} setup` or `lh setup` to configure access."
+    )

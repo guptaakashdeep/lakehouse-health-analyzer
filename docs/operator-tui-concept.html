@@ -1,0 +1,1239 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lakehouse Health Analyzer Operator TUI Concept</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101316;
+      --bg-soft: #151a1e;
+      --panel: #171d22;
+      --panel-strong: #1c242a;
+      --line: #2c3940;
+      --line-bright: #47606a;
+      --text: #e7eff2;
+      --text-soft: #aab8bd;
+      --muted: #74868e;
+      --cyan: #42d9d1;
+      --blue: #74a7ff;
+      --green: #72dc8f;
+      --amber: #f3c85f;
+      --red: #ff6b7d;
+      --violet: #c99cff;
+      --secondary: #9fb7c3;
+      --shadow: rgba(0, 0, 0, 0.42);
+      --radius: 8px;
+      --mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+      background:
+        linear-gradient(135deg, rgba(66, 217, 209, 0.08), transparent 32%),
+        linear-gradient(315deg, rgba(243, 200, 95, 0.06), transparent 38%),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      letter-spacing: 0;
+    }
+
+    body {
+      padding: 18px;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #202a30;
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+    }
+
+    button:hover {
+      border-color: var(--cyan);
+      background: #243139;
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    .terminal {
+      min-height: calc(100vh - 36px);
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid #30404a;
+      border-radius: 10px;
+      background: rgba(16, 19, 22, 0.92);
+      box-shadow: 0 22px 80px var(--shadow), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+    }
+
+    .header {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(90deg, #172025, #151a1e);
+    }
+
+    .brand {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .prompt-mark {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      flex: 0 0 auto;
+      place-items: center;
+      border: 1px solid rgba(66, 217, 209, 0.55);
+      border-radius: 7px;
+      color: var(--cyan);
+      background: rgba(66, 217, 209, 0.08);
+      font-weight: 800;
+    }
+
+    .title {
+      min-width: 0;
+    }
+
+    .title strong {
+      display: block;
+      overflow: hidden;
+      color: var(--text);
+      font-size: 15px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .title span {
+      display: block;
+      margin-top: 3px;
+      overflow: hidden;
+      color: var(--text-soft);
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status-bar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .pill {
+      display: inline-flex;
+      max-width: 100%;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #1e262c;
+      color: var(--text-soft);
+      font-size: 11px;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .pill b {
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .pill.fresh,
+    .label.iceberg,
+    .severity.healthy {
+      border-color: rgba(114, 220, 143, 0.48);
+      color: var(--green);
+      background: rgba(114, 220, 143, 0.1);
+    }
+
+    .pill.cached,
+    .label.cached {
+      border-color: rgba(159, 183, 195, 0.48);
+      color: var(--secondary);
+      background: rgba(159, 183, 195, 0.1);
+    }
+
+    .pill.refreshing {
+      border-color: rgba(116, 167, 255, 0.5);
+      color: var(--blue);
+      background: rgba(116, 167, 255, 0.1);
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .filter-wrap {
+      position: relative;
+      min-width: 0;
+    }
+
+    .filter-wrap::before {
+      content: "/";
+      position: absolute;
+      top: 50%;
+      left: 12px;
+      color: var(--cyan);
+      transform: translateY(-50%);
+    }
+
+    .filter-input {
+      width: 100%;
+      min-width: 0;
+      padding: 10px 12px 10px 32px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      outline: none;
+      background: #151b20;
+      color: var(--text);
+    }
+
+    .filter-input:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 0 2px rgba(66, 217, 209, 0.12);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 7px;
+    }
+
+    .actions button {
+      min-height: 39px;
+      padding: 0 11px;
+    }
+
+    .workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(180px, 0.75fr) minmax(240px, 1.05fr) minmax(360px, 2fr);
+      gap: 10px;
+    }
+
+    .panel {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+
+    .panel.active {
+      border-color: rgba(66, 217, 209, 0.58);
+      box-shadow: inset 0 0 0 1px rgba(66, 217, 209, 0.08);
+    }
+
+    .panel-head {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 11px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-strong);
+    }
+
+    .panel-title {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .count {
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .scroll {
+      min-height: 0;
+      overflow: auto;
+      scrollbar-color: var(--line-bright) transparent;
+    }
+
+    .list {
+      display: grid;
+      gap: 4px;
+      padding: 8px;
+    }
+
+    .row {
+      width: 100%;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 9px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-soft);
+      text-align: left;
+    }
+
+    .row:hover {
+      border-color: rgba(116, 167, 255, 0.42);
+      background: rgba(116, 167, 255, 0.08);
+    }
+
+    .row.selected {
+      border-color: rgba(66, 217, 209, 0.72);
+      background: rgba(66, 217, 209, 0.12);
+      color: var(--text);
+    }
+
+    .row-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .row-meta {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .label,
+    .severity {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.5;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .label.unknown {
+      border-color: rgba(116, 134, 142, 0.5);
+      color: #b7c3c8;
+      background: rgba(116, 134, 142, 0.1);
+    }
+
+    .label.non-iceberg,
+    .severity.critical {
+      border-color: rgba(255, 107, 125, 0.5);
+      color: var(--red);
+      background: rgba(255, 107, 125, 0.1);
+    }
+
+    .severity.warning {
+      border-color: rgba(243, 200, 95, 0.55);
+      color: var(--amber);
+      background: rgba(243, 200, 95, 0.1);
+    }
+
+    .severity.info {
+      border-color: rgba(116, 167, 255, 0.55);
+      color: var(--blue);
+      background: rgba(116, 167, 255, 0.1);
+    }
+
+    .detail {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      overflow: hidden;
+    }
+
+    .detail-summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+      padding: 11px;
+      border-bottom: 1px solid var(--line);
+      background: #182025;
+    }
+
+    .detail-title {
+      min-width: 0;
+    }
+
+    .detail-title h1 {
+      margin: 0;
+      overflow: hidden;
+      font-size: 15px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .detail-title p {
+      margin: 5px 0 0;
+      color: var(--text-soft);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .score-card {
+      min-width: 96px;
+      padding: 8px;
+      border: 1px solid rgba(114, 220, 143, 0.35);
+      border-radius: 7px;
+      background: rgba(114, 220, 143, 0.08);
+      text-align: right;
+    }
+
+    .score-card strong {
+      display: block;
+      color: var(--green);
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .score-card span {
+      display: block;
+      margin-top: 4px;
+      color: var(--text-soft);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .detail-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 10px;
+      scrollbar-color: var(--line-bright) transparent;
+    }
+
+    .section {
+      margin-bottom: 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      overflow: hidden;
+      background: #151b20;
+    }
+
+    .section h2 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 0;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      background: #1b2329;
+      color: var(--text);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    .section h2 span:last-child {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 600;
+    }
+
+    .rec-list,
+    .metric-grid {
+      display: grid;
+      gap: 7px;
+      padding: 9px;
+    }
+
+    .rec {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 6px;
+      background: #192127;
+    }
+
+    .rec strong {
+      display: block;
+      overflow-wrap: anywhere;
+      font-size: 12px;
+    }
+
+    .rec p {
+      margin: 4px 0 0;
+      color: var(--text-soft);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .evidence {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 7px;
+    }
+
+    .evidence span {
+      padding: 3px 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .metric-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .metric {
+      min-width: 0;
+      padding: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 6px;
+      background: #192127;
+    }
+
+    .metric span {
+      display: block;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 10px;
+      text-overflow: ellipsis;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 5px;
+      overflow-wrap: anywhere;
+      color: var(--text);
+      font-size: 15px;
+    }
+
+    .metric.good strong {
+      color: var(--green);
+    }
+
+    .metric.warn strong {
+      color: var(--amber);
+    }
+
+    .metric.info strong {
+      color: var(--blue);
+    }
+
+    .empty-state,
+    .unsupported-state {
+      display: grid;
+      min-height: 320px;
+      place-items: center;
+      padding: 22px;
+      color: var(--text-soft);
+      text-align: center;
+    }
+
+    .unsupported-card {
+      max-width: 560px;
+      padding: 18px;
+      border: 1px solid rgba(255, 107, 125, 0.45);
+      border-radius: 8px;
+      background: rgba(255, 107, 125, 0.08);
+    }
+
+    .unsupported-card h2 {
+      margin: 0 0 8px;
+      color: var(--red);
+      font-size: 15px;
+    }
+
+    .unsupported-card p {
+      margin: 0 0 12px;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .unsupported-card .actions {
+      justify-content: center;
+    }
+
+    .footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #151b20;
+      color: var(--text-soft);
+      font-size: 11px;
+    }
+
+    .keys {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+    }
+
+    .key {
+      color: var(--text);
+    }
+
+    .key b {
+      color: var(--cyan);
+      font-weight: 800;
+    }
+
+    .toast {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      max-width: min(420px, calc(100vw - 40px));
+      padding: 12px 14px;
+      border: 1px solid rgba(66, 217, 209, 0.56);
+      border-radius: 8px;
+      background: #172127;
+      color: var(--text);
+      box-shadow: 0 18px 50px var(--shadow);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(10px);
+      transition: opacity 180ms ease, transform 180ms ease;
+      z-index: 10;
+    }
+
+    .toast.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .toast strong {
+      display: block;
+      color: var(--cyan);
+      font-size: 12px;
+    }
+
+    .toast span {
+      display: block;
+      margin-top: 4px;
+      color: var(--text-soft);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 1080px) {
+      body {
+        padding: 10px;
+      }
+
+      .terminal {
+        min-height: calc(100vh - 20px);
+      }
+
+      .workspace {
+        grid-template-columns: minmax(180px, 0.75fr) minmax(260px, 1fr);
+        grid-template-rows: minmax(240px, 0.9fr) minmax(420px, 1.25fr);
+      }
+
+      .detail {
+        grid-column: 1 / -1;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .header,
+      .toolbar,
+      .detail-summary {
+        grid-template-columns: 1fr;
+      }
+
+      .status-bar,
+      .actions {
+        justify-content: flex-start;
+      }
+
+      .workspace {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(180px, auto) minmax(220px, auto) minmax(420px, auto);
+      }
+
+      .detail {
+        grid-column: auto;
+      }
+
+      .metric-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .score-card {
+        text-align: left;
+      }
+    }
+
+    @media (max-width: 460px) {
+      .terminal {
+        padding: 8px;
+      }
+
+      .title strong,
+      .detail-title h1 {
+        white-space: normal;
+      }
+
+      .row {
+        grid-template-columns: 1fr;
+        gap: 5px;
+      }
+
+      .row .label {
+        justify-self: start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="terminal" aria-label="Lakehouse Health Analyzer operator TUI concept">
+    <header class="header">
+      <div class="brand">
+        <div class="prompt-mark">lh</div>
+        <div class="title">
+          <strong>Lakehouse Health Analyzer</strong>
+          <span id="subtitle">AWS Glue catalog browser · explicit analysis on selection</span>
+        </div>
+      </div>
+      <div class="status-bar" aria-label="Current operator context">
+        <span class="pill">Catalog <b id="catalogName">glue</b></span>
+        <span class="pill">Profile <b>analytics-prod</b></span>
+        <span class="pill">Region <b>eu-central-1</b></span>
+        <span class="pill">Database <b id="namespaceName">finance</b></span>
+        <span class="pill fresh" id="freshnessPill">FRESH</span>
+      </div>
+    </header>
+
+    <section class="toolbar" aria-label="TUI controls">
+      <label class="filter-wrap">
+        <input id="filterInput" class="filter-input" autocomplete="off" placeholder="Filter active panel: databases" aria-label="Filter active panel">
+      </label>
+      <div class="actions">
+        <button id="scopeDatabases" type="button">Filter Databases</button>
+        <button id="scopeTables" type="button">Filter Tables</button>
+        <button id="refreshBtn" type="button">Refresh</button>
+        <button id="exportBtn" type="button">Export</button>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <aside class="panel active" id="namespacePanel">
+        <div class="panel-head">
+          <div class="panel-title">Databases</div>
+          <div class="count" id="namespaceCount">0</div>
+        </div>
+        <div class="scroll">
+          <div class="list" id="namespaceList"></div>
+        </div>
+      </aside>
+
+      <aside class="panel" id="tablePanel">
+        <div class="panel-head">
+          <div class="panel-title">Tables</div>
+          <div class="count" id="tableCount">0</div>
+        </div>
+        <div class="scroll">
+          <div class="list" id="tableList"></div>
+        </div>
+      </aside>
+
+      <section class="panel detail" id="detailPanel">
+        <div class="detail-summary" id="detailSummary"></div>
+        <div class="detail-body" id="detailBody"></div>
+      </section>
+    </section>
+
+    <footer class="footer">
+      <div class="keys">
+        <span class="key"><b>Enter</b> Analyze</span>
+        <span class="key"><b>/</b> Filter</span>
+        <span class="key"><b>r</b> Refresh</span>
+        <span class="key"><b>e</b> Export</span>
+        <span class="key"><b>s</b> Setup</span>
+        <span class="key"><b>q</b> Quit</span>
+      </div>
+      <span id="footerHint">Mouse clicks are wired for this concept mockup.</span>
+    </footer>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const catalog = {
+      finance: {
+        description: "Curated finance lakehouse tables",
+        tables: [
+          table("customer_balances", "ICEBERG", "CACHED", 92, [
+            rec("INFO", "Expire stale snapshots", "Snapshot history is healthy but older snapshots can be expired during the next routine maintenance window.", ["oldest snapshot 31d", "threshold 30d"]),
+            rec("HEALTHY", "File sizes look balanced", "Average data file size is within the configured target range.", ["avg file 192 MB", "target 128-512 MB"])
+          ], [
+            warning("INFO", "Partition summary is derived from retained metadata only.")
+          ], metricSet("1,284", "238 GB", "24.1B", "128", "17", "18m ago")),
+          table("daily_pnl", "ICEBERG", "FRESH", 68, [
+            rec("CRITICAL", "Rewrite small files", "A high small-file ratio will slow planning and scan performance for daily reporting.", ["small files 63%", "threshold 40%"]),
+            rec("WARNING", "Review partition skew", "One partition is carrying most recent writes and should be checked before the next compaction run.", ["largest partition 41%", "threshold 30%"])
+          ], [
+            warning("WARNING", "Record count came from metadata and may lag recent commits.")
+          ], metricSet("9,842", "74 GB", "910M", "365", "43", "just now")),
+          table("legacy_gl_ledger", "UNKNOWN", "NOT ANALYZED", 0, [], [], null),
+          unsupportedTable("sap_extract_view")
+        ]
+      },
+      sales: {
+        description: "Sales serving and ingestion zones",
+        tables: [
+          table("orders", "ICEBERG", "FRESH", 84, [
+            rec("WARNING", "Expire snapshots", "Snapshot retention has grown beyond the recommended operator policy.", ["retained snapshots 52", "threshold 40"]),
+            rec("INFO", "Review delete files", "Position delete files are present but still below the warning threshold.", ["delete files 18", "threshold 25"])
+          ], [
+            warning("INFO", "No partition-level row breakdown was available in the report.")
+          ], metricSet("3,426", "416 GB", "5.8B", "96", "52", "just now")),
+          table("order_events_raw", "UNKNOWN", "NOT ANALYZED", 0, [], [], null),
+          table("returns", "ICEBERG", "CACHED", 77, [
+            rec("WARNING", "Compact delete-heavy partitions", "Delete file pressure is concentrated in return status updates.", ["delete/data ratio 0.19", "threshold 0.15"])
+          ], [], metricSet("1,067", "88 GB", "610M", "42", "26", "6m ago")),
+          unsupportedTable("redshift_external_orders")
+        ]
+      },
+      marketing: {
+        description: "Campaign and attribution datasets",
+        tables: [
+          table("campaign_attribution", "ICEBERG", "CACHED", 95, [
+            rec("HEALTHY", "No immediate action", "The table is inside configured health thresholds.", ["last analyzed 4m ago"])
+          ], [], metricSet("518", "39 GB", "188M", "18", "12", "4m ago")),
+          table("email_events", "UNKNOWN", "NOT ANALYZED", 0, [], [], null),
+          table("landing_page_sessions", "ICEBERG", "FRESH", 71, [
+            rec("INFO", "Check metadata growth", "Metadata files are growing faster than table size.", ["metadata 612 MB", "threshold 512 MB"])
+          ], [], metricSet("2,104", "126 GB", "1.1B", "54", "31", "just now"))
+        ]
+      },
+      "analytics.curated": {
+        description: "Flat display of a hierarchical namespace",
+        tables: [
+          table("feature_store_daily", "ICEBERG", "FRESH", 89, [
+            rec("INFO", "Expire snapshots soon", "The table is close to the configured retained snapshot threshold.", ["retained snapshots 38", "threshold 40"])
+          ], [], metricSet("776", "204 GB", "3.2B", "30", "38", "just now")),
+          table("model_scores", "UNKNOWN", "NOT ANALYZED", 0, [], [], null),
+          unsupportedTable("tmp_training_view")
+        ]
+      },
+      ops_raw: {
+        description: "Operational ingestion area",
+        tables: [
+          table("service_logs", "UNKNOWN", "NOT ANALYZED", 0, [], [], null),
+          table("incident_events", "ICEBERG", "CACHED", 63, [
+            rec("CRITICAL", "Rewrite manifests", "Manifest count is high enough to slow planning for incident queries.", ["manifests 814", "threshold 500"]),
+            rec("WARNING", "Compact small files", "Ingestion has created many files under the configured size target.", ["small files 58%", "threshold 40%"])
+          ], [
+            warning("WARNING", "Snapshot age could not be calculated for two retained snapshots.")
+          ], metricSet("12,402", "512 GB", "8.7B", "8", "64", "11m ago"))
+        ]
+      }
+    };
+
+    let selectedNamespace = "finance";
+    let selectedTable = "daily_pnl";
+    let filterScope = "databases";
+    let filterText = "";
+    let freshness = "FRESH";
+
+    const namespaceList = document.getElementById("namespaceList");
+    const tableList = document.getElementById("tableList");
+    const namespaceCount = document.getElementById("namespaceCount");
+    const tableCount = document.getElementById("tableCount");
+    const namespaceName = document.getElementById("namespaceName");
+    const freshnessPill = document.getElementById("freshnessPill");
+    const detailSummary = document.getElementById("detailSummary");
+    const detailBody = document.getElementById("detailBody");
+    const filterInput = document.getElementById("filterInput");
+    const namespacePanel = document.getElementById("namespacePanel");
+    const tablePanel = document.getElementById("tablePanel");
+    const toast = document.getElementById("toast");
+
+    function table(name, format, cache, score, recommendations, warnings, metrics) {
+      return { name, format, cache, score, recommendations, warnings, metrics, unsupported: false };
+    }
+
+    function unsupportedTable(name) {
+      return { name, format: "NON-ICEBERG", cache: "CACHED", score: 0, recommendations: [], warnings: [], metrics: null, unsupported: true };
+    }
+
+    function rec(severity, title, body, evidence) {
+      return { severity, title, body, evidence };
+    }
+
+    function warning(severity, body) {
+      return { severity, body };
+    }
+
+    function metricSet(files, size, records, partitions, snapshots, analyzed) {
+      return {
+        Files: [
+          ["Data files", files, "warn"],
+          ["Table size", size, "info"],
+          ["Avg file size", files === "9,842" ? "7.7 MB" : "192 MB", files === "9,842" ? "warn" : "good"]
+        ],
+        Records: [
+          ["Records", records, "info"],
+          ["Deletes", records === "610M" ? "22M" : "1.4M", records === "610M" ? "warn" : "good"],
+          ["Delete ratio", records === "610M" ? "3.6%" : "0.4%", records === "610M" ? "warn" : "good"]
+        ],
+        Partitions: [
+          ["Partitions", partitions, "info"],
+          ["Largest partition", partitions === "365" ? "41%" : "18%", partitions === "365" ? "warn" : "good"],
+          ["Skew status", partitions === "365" ? "WARNING" : "HEALTHY", partitions === "365" ? "warn" : "good"]
+        ],
+        Snapshots: [
+          ["Retained snapshots", snapshots, snapshots === "64" || snapshots === "52" ? "warn" : "info"],
+          ["Oldest snapshot", snapshots === "64" ? "49d" : "31d", snapshots === "64" ? "warn" : "info"],
+          ["Last analysis", analyzed, "good"]
+        ],
+        "Metadata & Evolution": [
+          ["Manifests", snapshots === "64" ? "814" : "188", snapshots === "64" ? "warn" : "good"],
+          ["Schema versions", "6", "info"],
+          ["Spec versions", "2", "info"]
+        ],
+        "Source & Runtime": [
+          ["Catalog", "glue", "info"],
+          ["Classification", "glue_parameters", "good"],
+          ["Cache TTL", "15m", "info"]
+        ]
+      };
+    }
+
+    function setScope(scope) {
+      filterScope = scope;
+      filterText = "";
+      filterInput.value = "";
+      filterInput.placeholder = `Filter active panel: ${scope}`;
+      namespacePanel.classList.toggle("active", scope === "databases");
+      tablePanel.classList.toggle("active", scope === "tables");
+      render();
+      filterInput.focus();
+    }
+
+    function formatClass(format) {
+      return format.toLowerCase().replace("-", "-");
+    }
+
+    function badge(text, extra = "") {
+      const normalized = text.toLowerCase().replace(/\s+/g, "-");
+      return `<span class="label ${normalized} ${extra}">${text}</span>`;
+    }
+
+    function severityBadge(severity) {
+      return `<span class="severity ${severity.toLowerCase()}">${severity}</span>`;
+    }
+
+    function visibleNamespaces() {
+      return Object.keys(catalog).filter((name) => name.toLowerCase().includes(filterScope === "databases" ? filterText : ""));
+    }
+
+    function visibleTables() {
+      const tables = catalog[selectedNamespace].tables;
+      const filter = filterScope === "tables" ? filterText : "";
+      return tables.filter((t) => t.name.toLowerCase().includes(filter));
+    }
+
+    function selectNamespace(name) {
+      selectedNamespace = name;
+      selectedTable = catalog[name].tables[0]?.name || "";
+      freshness = "FRESH";
+      namespaceName.textContent = name;
+      render();
+    }
+
+    function selectTable(name) {
+      selectedTable = name;
+      const table = currentTable();
+      freshness = table.cache === "CACHED" ? "CACHED" : "FRESH";
+      render();
+    }
+
+    function currentTable() {
+      return catalog[selectedNamespace].tables.find((t) => t.name === selectedTable) || catalog[selectedNamespace].tables[0];
+    }
+
+    function renderNamespaces() {
+      const namespaces = visibleNamespaces();
+      namespaceCount.textContent = `${namespaces.length} shown`;
+      namespaceList.innerHTML = namespaces.map((name) => {
+        const tableTotal = catalog[name].tables.length;
+        return `
+          <button type="button" class="row ${name === selectedNamespace ? "selected" : ""}" data-namespace="${name}">
+            <span class="row-name">${escapeHtml(name)}</span>
+            <span class="row-meta">${tableTotal} tables</span>
+          </button>
+        `;
+      }).join("");
+      namespaceList.querySelectorAll("[data-namespace]").forEach((button) => {
+        button.addEventListener("click", () => selectNamespace(button.dataset.namespace));
+      });
+    }
+
+    function renderTables() {
+      const tables = visibleTables();
+      tableCount.textContent = `${tables.length} shown`;
+      tableList.innerHTML = tables.map((table) => `
+        <button type="button" class="row ${table.name === selectedTable ? "selected" : ""}" data-table="${table.name}">
+          <span class="row-name">${escapeHtml(table.name)}</span>
+          ${badge(table.format, formatClass(table.format))}
+        </button>
+      `).join("");
+      tableList.querySelectorAll("[data-table]").forEach((button) => {
+        button.addEventListener("click", () => selectTable(button.dataset.table));
+      });
+    }
+
+    function renderFreshness() {
+      freshnessPill.className = `pill ${freshness.toLowerCase()}`;
+      freshnessPill.textContent = freshness;
+    }
+
+    function renderDetail() {
+      const table = currentTable();
+      if (!table) {
+        detailSummary.innerHTML = "";
+        detailBody.innerHTML = `<div class="empty-state">No tables found in this database.</div>`;
+        return;
+      }
+
+      detailSummary.innerHTML = `
+        <div class="detail-title">
+          <h1>${escapeHtml(selectedNamespace)}.${escapeHtml(table.name)} ${badge(table.format, formatClass(table.format))} ${badge(table.cache, table.cache === "CACHED" ? "cached" : "")}</h1>
+          <p>${escapeHtml(catalog[selectedNamespace].description)} · analysis starts only after explicit selection in the real TUI</p>
+        </div>
+        ${table.unsupported ? "" : `<div class="score-card"><strong>${table.score}</strong><span>Health Score</span></div>`}
+      `;
+
+      if (table.unsupported) {
+        detailBody.innerHTML = `
+          <div class="unsupported-state">
+            <div class="unsupported-card">
+              <h2>NON-ICEBERG table is not supported</h2>
+              <p>This table was previously analyzed and confirmed unsupported. The operator cache keeps this classification so repeated selections do not rerun expensive analysis.</p>
+              <div class="actions">
+                <button type="button" id="backToTables">Back to tables</button>
+                <button type="button" id="refreshUnsupported">Refresh status</button>
+              </div>
+            </div>
+          </div>
+        `;
+        document.getElementById("backToTables").addEventListener("click", () => setScope("tables"));
+        document.getElementById("refreshUnsupported").addEventListener("click", refreshMock);
+        return;
+      }
+
+      if (table.format === "UNKNOWN") {
+        detailBody.innerHTML = `
+          <div class="unsupported-state">
+            <div class="unsupported-card" style="border-color: rgba(116,134,142,.48); background: rgba(116,134,142,.08);">
+              <h2 style="color:#b7c3c8;">Format UNKNOWN</h2>
+              <p>Glue metadata did not positively identify this table as Iceberg. In the real TUI, pressing Enter would attempt Iceberg analysis and promote the result to ICEBERG or NON-ICEBERG.</p>
+              <div class="actions">
+                <button type="button" id="mockAnalyzeUnknown">Attempt analysis</button>
+                <button type="button" id="refreshUnknown">Refresh status</button>
+              </div>
+            </div>
+          </div>
+        `;
+        document.getElementById("mockAnalyzeUnknown").addEventListener("click", () => {
+          table.format = "ICEBERG";
+          table.cache = "FRESH";
+          table.score = 81;
+          table.recommendations = [
+            rec("INFO", "Metadata now confirmed Iceberg", "Explicit analysis succeeded and promoted this table from UNKNOWN to ICEBERG.", ["source analysis_success"])
+          ];
+          table.warnings = [];
+          table.metrics = metricSet("842", "61 GB", "420M", "21", "19", "just now");
+          freshness = "FRESH";
+          showToast("Analysis complete", `${selectedNamespace}.${table.name} promoted to ICEBERG.`);
+          render();
+        });
+        document.getElementById("refreshUnknown").addEventListener("click", refreshMock);
+        return;
+      }
+
+      detailBody.innerHTML = [
+        section("Recommendations", `${table.recommendations.length} items`, renderRecommendations(table.recommendations)),
+        section("Warnings", `${table.warnings.length} items`, renderWarnings(table.warnings)),
+        ...Object.entries(table.metrics).map(([title, rows]) => section(title, "metrics", renderMetrics(rows)))
+      ].join("");
+    }
+
+    function section(title, count, content) {
+      return `<section class="section"><h2><span>${title}</span><span>${count}</span></h2>${content}</section>`;
+    }
+
+    function renderRecommendations(items) {
+      if (!items.length) {
+        return `<div class="rec-list"><div class="rec"><div>${severityBadge("HEALTHY")}</div><div><strong>No recommendations</strong><p>The table is inside configured operator thresholds.</p></div></div></div>`;
+      }
+      return `<div class="rec-list">${items.map((item) => `
+        <div class="rec">
+          <div>${severityBadge(item.severity)}</div>
+          <div>
+            <strong>${escapeHtml(item.title)}</strong>
+            <p>${escapeHtml(item.body)}</p>
+            <div class="evidence">${item.evidence.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</div>
+          </div>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function renderWarnings(items) {
+      if (!items.length) {
+        return `<div class="rec-list"><div class="rec"><div>${severityBadge("HEALTHY")}</div><div><strong>No calculation warnings</strong><p>All displayed metrics were available from the canonical report.</p></div></div></div>`;
+      }
+      return `<div class="rec-list">${items.map((item) => `
+        <div class="rec">
+          <div>${severityBadge(item.severity)}</div>
+          <div><strong>Calculation warning</strong><p>${escapeHtml(item.body)}</p></div>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function renderMetrics(rows) {
+      return `<div class="metric-grid">${rows.map(([label, value, tone]) => `
+        <div class="metric ${tone}">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function refreshMock() {
+      freshness = "REFRESHING";
+      renderFreshness();
+      showToast("Refresh started", `Refreshing ${filterScope === "tables" ? "table metadata" : "database list"} for the active scope.`);
+      window.setTimeout(() => {
+        const table = currentTable();
+        if (table && table.cache === "CACHED") {
+          table.cache = "FRESH";
+        }
+        freshness = "FRESH";
+        render();
+        showToast("Refresh complete", "The active scope is now marked FRESH in this concept mockup.");
+      }, 800);
+    }
+
+    function exportMock() {
+      const table = currentTable();
+      if (!table || table.format === "UNKNOWN") {
+        showToast("Export unavailable", "Analyze or refresh the selected table before exporting a report.");
+        return;
+      }
+      if (table.unsupported) {
+        showToast("Export unavailable", "NON-ICEBERG tables do not have supported health reports.");
+        return;
+      }
+      showToast("Report exported", `${selectedNamespace}-${table.name}.json and .md · cache_status=${table.cache.toLowerCase()}`);
+    }
+
+    function showToast(title, message) {
+      toast.innerHTML = `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(message)}</span>`;
+      toast.classList.add("visible");
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => toast.classList.remove("visible"), 2600);
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;"
+      }[char]));
+    }
+
+    function render() {
+      namespaceName.textContent = selectedNamespace;
+      renderFreshness();
+      renderNamespaces();
+      renderTables();
+      renderDetail();
+    }
+
+    document.getElementById("scopeDatabases").addEventListener("click", () => setScope("databases"));
+    document.getElementById("scopeTables").addEventListener("click", () => setScope("tables"));
+    document.getElementById("refreshBtn").addEventListener("click", refreshMock);
+    document.getElementById("exportBtn").addEventListener("click", exportMock);
+
+    filterInput.addEventListener("input", (event) => {
+      filterText = event.target.value.toLowerCase();
+      render();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const isFiltering = document.activeElement === filterInput;
+      if (event.key === "/" && document.activeElement !== filterInput) {
+        event.preventDefault();
+        filterInput.focus();
+      }
+      if (event.key === "Escape") {
+        filterText = "";
+        filterInput.value = "";
+        render();
+      }
+      if (isFiltering) {
+        return;
+      }
+      if (event.key.toLowerCase() === "r") {
+        refreshMock();
+      }
+      if (event.key.toLowerCase() === "e") {
+        exportMock();
+      }
+      if (event.key.toLowerCase() === "s") {
+        showToast("Setup", "In the real TUI this opens the setup/settings flow backed by config.toml.");
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>
