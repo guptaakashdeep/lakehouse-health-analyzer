@@ -1,129 +1,160 @@
 # Lakehouse Health Analyzer
 
-A tool to analyze the health of Lakehouse tables (Iceberg, Hudi, Delta Lake) by providing insights into table metadata, partition statistics, and overall table health.
+Analyze Apache Iceberg table metadata through one canonical `TableHealthReport` model shared by Streamlit, terminal workflows, and exports.
 
 ## Demo
 
 ![Lakehouse Health Analyzer Demo](docs/resources/Lakehouse-analyzer.gif)
 
-## Features
+## Scope in this version
 
-- Table metadata analysis
-- Snapshot Metadata metrics
-- Partition size statistics
-- File count per partition
-- Orphan file detection (planned)
-- Partition skewness analysis (planned)
-- Interactive dashboard using Streamlit
+- Table format: Apache Iceberg
+- Table sources:
+  - Metadata file source (`metadata.json` path)
+  - AWS Glue catalog table source (`pyiceberg` Glue catalog loading)
+- Interfaces:
+  - Streamlit dashboard (`streamlit_app.py`)
+  - Operator terminal workflow (`lakehouse-health-operator`)
+- Outputs:
+  - JSON structured report exports
+  - Markdown summary report exports
+- Included report sections:
+  - Health metrics, display statistics, partition metrics
+  - Snapshot and retained table evolution metrics
+  - Maintenance recommendations with evidence and thresholds
 
-## Supported Table Formats
+Out of scope for this version:
 
-- Apache Iceberg (primary)
-- Apache Hudi (planned)
-- Delta Lake (planned)
+- Orphan-file identification details and orphan-file cleanup actions
+- Non-Iceberg table formats (for example Hudi or Delta Lake)
+- Non-Glue catalog integrations
 
-## Supported Catalogs
-
-- AWS Glue Catalog (planned)
-- REST Catalog (planned)
-- Static Tables Load via `metadata.json` filepath.
-
-## Installation
-
-```bash
-pip install lakehouse-health-analyzer
-```
-
-## Development Setup
-
-1. Clone the repository.
-2. Sync the project environment with `uv`:
-   ```bash
-   uv sync --extra dev
-   ```
-3. Run commands through `uv run`:
-   ```bash
-   uv run pytest
-   ```
-
-## Usage
-
-```python
-# Add src to Python path
-import sys
-import os
-import sys
-import os
-
-# Add src to Python path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-
-from visualization.metrics_dashboard import show_dashboard
-from analyzers.iceberg import IcebergAnalyzer
-
-def get_table_metrics(table_name=None, catalog_name=None, 
-                     use_metadata_file=False, metadata_location=None):
-    """Get metrics for an Iceberg table."""
-    try:
-        # Initialize analyzer based on mode
-        if use_metadata_file:
-            analyzer = IcebergAnalyzer(metadata_path=metadata_location)
-        else:
-            # Not supported at the moment
-            analyzer = IcebergAnalyzer(database="default", table_name=table_name, 
-                                      catalog_name=catalog_name)
-        
-        # Get metrics
-        return analyzer.get_table_metrics()
-    except Exception as e:
-        print(f"Error getting table metrics: {str(e)}")
-        raise e
-
-# Run the dashboard with a function to get table metrics
-show_dashboard(
-    get_table_metrics=get_table_metrics,
-    available_tables=["example.default.table1", "example.default.table2"],
-    catalog_name="default",
-    use_metadata_file=True  # Default to metadata file mode
-)
-```
-
-### Running the Dashboard
-
-The easiest way to run the dashboard is using Streamlit:
+## `uv` workflow (supported path)
 
 ```bash
-# From the project root
+uv sync --extra dev
+uv run pytest
+```
+
+Run all project commands through `uv run`.
+
+## Runtime configuration
+
+Configuration is loaded by `AnalyzerConfiguration.from_environment()`.
+
+Required for metadata-file analysis:
+
+- `LHA_METADATA_LOCATION`
+
+Required for Glue catalog-table analysis:
+
+- `LHA_TABLE_SOURCE_KIND=glue_catalog_table`
+- `LHA_GLUE_CATALOG_NAME`
+- `LHA_GLUE_NAMESPACE` (dot-separated for operator/table analysis; Streamlit catalog overview currently supports a single namespace component)
+- `LHA_GLUE_TABLE_NAME`
+
+Optional policy and runtime settings:
+
+- `LHA_AWS_PROFILE`
+- `LHA_AWS_REGION`
+- `LHA_SNAPSHOT_RETENTION_DAYS` (default `30`)
+- `LHA_RECOMMENDATION_THRESHOLDS` (JSON object)
+- `LHA_CACHE_TTL_SECONDS` (default `900`)
+- `LHA_TIMEOUT_SECONDS` (default `30`)
+- `LHA_MAX_CONCURRENCY` (default `4`)
+- `LHA_EXPORT_FORMATS` (comma-separated: `json`, `markdown`)
+- `LHA_EXPORT_DIRECTORY`
+
+## Run Streamlit
+
+```bash
 uv run streamlit run streamlit_app.py
 ```
 
-Alternatively, you can run the dashboard directly:
+In the UI you can:
+
+- Analyze a single metadata file
+- Load catalog overview rows for Glue tables
+- View cache status for overview rows (`fresh` or `cached`)
+- Review recommendations, warnings, partitions, and evolution history for metadata-file report views
+
+The current Streamlit catalog view is an overview table. Full catalog-table drilldown is tracked separately from this version's completed scope.
+
+## Run operator workflow
+
+Example environment for Glue catalog workflow:
 
 ```bash
-uv run python run_dashboard.py
+export LHA_TABLE_SOURCE_KIND=glue_catalog_table
+export LHA_GLUE_CATALOG_NAME=analytics
+export LHA_GLUE_NAMESPACE=sales
+export LHA_GLUE_TABLE_NAME=orders
 ```
 
-## Project Structure
+List catalog overview:
 
-```
-lakehouse-health-analyzer/
-├── src/
-│   ├── catalogs/         # Catalog implementations
-│   ├── analyzers/        # Table format specific analyzers
-│   ├── visualization/    # Dashboard and visualization components
-│   │   └── components/   # UI components for the dashboard
-│   └── utils/            # Utility functions
-├── tests/                # Test files
-├── docs/                 # Documentation
-├── examples/             # Example notebooks and scripts
-├── streamlit_app.py      # Streamlit entry point
-└── run_dashboard.py      # Python entry point
+```bash
+uv run lakehouse-health-operator
 ```
 
-## Contributing
+Inspect a selected table:
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+```bash
+uv run lakehouse-health-operator --inspect sales.orders
+```
+
+Force refresh or bypass cache:
+
+```bash
+uv run lakehouse-health-operator --refresh
+uv run lakehouse-health-operator --no-cache
+```
+
+## Cache behavior
+
+- Backend: DuckDB
+- Default path: `${XDG_CACHE_HOME:-~/.cache}/lakehouse-health-analyzer/catalog-overview.duckdb`
+- Default TTL: 900 seconds (15 minutes)
+- Expired, missing, or unreadable cache entries are treated as misses
+
+## Export workflow
+
+Enable exports through output policy environment variables:
+
+```bash
+export LHA_EXPORT_FORMATS=json,markdown
+export LHA_EXPORT_DIRECTORY=/tmp/lha-exports
+uv run lakehouse-health-operator --inspect sales.orders
+```
+
+Exports are written as:
+
+- `<table-name-with-dots-replaced-by-dashes>.json`
+- `<table-name-with-dots-replaced-by-dashes>.md`
+
+For example, `sales.orders` exports to `sales-orders.json` and `sales-orders.md`.
+
+JSON preserves the canonical report structure. Markdown is a readable summary with source, cache/analyzed metadata, health metrics, warnings, and recommendation summaries.
+
+`LHA_EXPORT_DIRECTORY` must already exist.
+
+## Recommendation workflow
+
+Current recommendation types in report outputs:
+
+- `compaction`
+- `snapshot_expiration`
+- `metadata_cleanup`
+- `delete_file_cleanup`
+
+Severity values are `info`, `warning`, or `critical`, with thresholds optionally overridden via `LHA_RECOMMENDATION_THRESHOLDS`.
+
+## Testing
+
+```bash
+uv run pytest
+```
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+MIT. See [LICENSE](LICENSE).
