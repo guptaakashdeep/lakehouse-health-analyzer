@@ -39,6 +39,7 @@ class RuntimePolicy:
 @dataclass(frozen=True)
 class OutputPolicy:
     export_formats: tuple[str, ...] = ()
+    export_directory: str | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,14 @@ class AnalyzerConfiguration:
                     overrides,
                     "max_concurrency",
                     _int_value(values, "LHA_MAX_CONCURRENCY", 4),
+                ),
+            ),
+            output=OutputPolicy(
+                export_formats=_output_formats_value(values, overrides),
+                export_directory=_override_optional_string(
+                    overrides,
+                    "export_directory",
+                    values.get("LHA_EXPORT_DIRECTORY"),
                 ),
             ),
         )
@@ -210,3 +219,29 @@ def _override_mapping(
     if not isinstance(raw_value, Mapping):
         raise ValueError(f"{key} must be a mapping")
     return raw_value
+
+
+def _output_formats_value(
+    values: Mapping[str, str], overrides: Mapping[str, object]
+) -> tuple[str, ...]:
+    raw_override = overrides.get("export_formats")
+    if raw_override is not None:
+        if isinstance(raw_override, str):
+            return _split_csv_values(raw_override)
+        return tuple(
+            str(value).strip().lower() for value in raw_override if str(value).strip()
+        )
+    return _split_csv_values(values.get("LHA_EXPORT_FORMATS", ""))
+
+
+def _split_csv_values(raw_value: str) -> tuple[str, ...]:
+    return tuple(part.strip().lower() for part in raw_value.split(",") if part.strip())
+
+
+def _override_optional_string(
+    overrides: Mapping[str, object], key: str, fallback: str | None
+) -> str | None:
+    raw_value = overrides.get(key)
+    if raw_value is None:
+        return fallback
+    return str(raw_value)

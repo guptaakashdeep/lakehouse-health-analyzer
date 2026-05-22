@@ -5,7 +5,7 @@ import multiprocessing
 import signal
 import sys
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from queue import Empty
 from time import monotonic, sleep
 from typing import Callable, Mapping, Protocol, Sequence, TextIO
@@ -16,8 +16,10 @@ from analysis.report import TableHealthReport
 from configuration import (
     AnalyzerConfiguration,
     GlueCatalogTableSourceConfiguration,
+    OutputPolicy,
     RuntimePolicy,
 )
+from report_exports import export_table_health_report_for_output_policy
 
 
 @dataclass(frozen=True)
@@ -290,6 +292,8 @@ def run_operator_catalog_workflow(
     *,
     inspect_table: str | None = None,
     output: TextIO | None = None,
+    output_policy: OutputPolicy | None = None,
+    now: Callable[[], datetime] | None = None,
 ) -> int:
     stream = output or sys.stdout
     overview = workflow.load_overview()
@@ -297,9 +301,17 @@ def run_operator_catalog_workflow(
     stream.write("\n")
     if inspect_table is not None:
         report = workflow.inspect_table(inspect_table)
+        analyzed_at = (now or (lambda: datetime.now(timezone.utc)))()
         stream.write("\n")
         stream.write(workflow.render_table_health_report(report))
         stream.write("\n")
+        if output_policy is not None:
+            export_table_health_report_for_output_policy(
+                report,
+                output_policy=output_policy,
+                cache_status="fresh",
+                analyzed_at=analyzed_at,
+            )
     return 0
 
 
@@ -345,6 +357,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return run_operator_catalog_workflow(
         workflow,
         inspect_table=args.inspect,
+        output_policy=config.output,
     )
 
 
