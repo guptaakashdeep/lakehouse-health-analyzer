@@ -2,6 +2,10 @@
 
 Analyze Apache Iceberg table metadata through one canonical `TableHealthReport` model shared by Streamlit, terminal workflows, and exports.
 
+Architecture decisions live in [docs/adr](docs/adr), and the current operator
+TUI modernization notes live in
+[docs/operator-tui-modernization.md](docs/operator-tui-modernization.md).
+
 ## Demo
 
 ![Lakehouse Health Analyzer Demo](docs/resources/Lakehouse-analyzer.gif)
@@ -68,6 +72,23 @@ Run all project commands through `uv run`.
 
 Configuration is loaded by `AnalyzerConfiguration.from_environment()`.
 
+The project uses **catalog namespace** as the canonical term for the
+catalog-scoped grouping that contains tables. In AWS Glue, this is the Glue
+database, so Glue-facing UI may label the same value as "Database" for
+readability.
+
+The planned setup command saves reusable defaults to
+`${XDG_CONFIG_HOME:-~/.config}/lakehouse-health-analyzer/config.toml`.
+Configuration precedence is:
+
+1. Built-in defaults
+2. Setup config file
+3. Environment variables
+4. CLI flags or UI overrides
+
+Detailed setup behavior is captured in
+[docs/operator-tui-modernization.md](docs/operator-tui-modernization.md).
+
 Required for metadata-file analysis:
 
 - `LHA_METADATA_LOCATION`
@@ -76,7 +97,7 @@ Required for Glue catalog-table analysis:
 
 - `LHA_TABLE_SOURCE_KIND=glue_catalog_table`
 - `LHA_GLUE_CATALOG_NAME`
-- `LHA_GLUE_NAMESPACE` (dot-separated for operator/table analysis; Streamlit catalog overview currently supports a single namespace component)
+- `LHA_GLUE_NAMESPACE` (the Glue database; dot-separated for operator/table analysis; Streamlit catalog overview currently supports a single namespace component)
 - `LHA_GLUE_TABLE_NAME`
 
 Optional policy and runtime settings:
@@ -108,6 +129,20 @@ The current Streamlit catalog view is an overview table. Full catalog-table dril
 
 ## Run operator workflow
 
+The planned default operator command should open the interactive Textual TUI:
+
+```bash
+uv run lakehouse-health-operator
+```
+
+Setup and report export should use explicit subcommands:
+
+```bash
+uv run lakehouse-health-operator setup
+uv run lakehouse-health-operator report sales.orders --format json
+uv run lakehouse-health-operator report sales.orders --format markdown
+```
+
 Example environment for Glue catalog workflow:
 
 ```bash
@@ -136,12 +171,17 @@ uv run lakehouse-health-operator --refresh
 uv run lakehouse-health-operator --no-cache
 ```
 
+Interactive TUI behavior, layout, styling, and key bindings are captured in
+[docs/operator-tui-modernization.md](docs/operator-tui-modernization.md).
+
 ## Cache behavior
 
 - Backend: DuckDB
 - Default path: `${XDG_CACHE_HOME:-~/.cache}/lakehouse-health-analyzer/catalog-overview.duckdb`
 - Default TTL: 900 seconds (15 minutes)
 - Expired, missing, or unreadable cache entries are treated as misses
+- Operator-facing values may be cached when they are visibly marked as cached
+  and refreshable.
 
 ## Export workflow
 
@@ -163,6 +203,21 @@ For example, `sales.orders` exports to `sales-orders.json` and `sales-orders.md`
 JSON preserves the canonical report structure. Markdown is a readable summary with source, cache/analyzed metadata, health metrics, warnings, and recommendation summaries.
 
 `LHA_EXPORT_DIRECTORY` must already exist.
+
+The planned report command should accept a namespace-qualified table identifier
+and use the configured catalog:
+
+```bash
+uv run lakehouse-health-operator report sales.orders --format json
+uv run lakehouse-health-operator report sales.orders --format markdown
+uv run lakehouse-health-operator report sales.curated.orders --format json
+uv run lakehouse-health-operator report sales.orders --format json --output /tmp/sales-orders.json
+```
+
+The final identifier segment is the table name; earlier segments make up the
+catalog namespace. The report command should print JSON or Markdown to stdout
+by default, and write a file only when an explicit output path or configured
+output policy requests it.
 
 ## Recommendation workflow
 
