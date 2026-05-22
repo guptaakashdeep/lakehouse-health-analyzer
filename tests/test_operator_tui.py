@@ -1,5 +1,8 @@
 import io
 import time
+from datetime import datetime, timezone
+
+import pytest
 
 from analysis.report import (
     CalculationWarning,
@@ -15,6 +18,7 @@ from analysis.report import (
 from configuration import (
     AnalyzerConfiguration,
     GlueCatalogTableSourceConfiguration,
+    OutputPolicy,
     RuntimePolicy,
 )
 from operator_tui import (
@@ -265,6 +269,98 @@ def test_operator_catalog_workflow_renders_full_selected_table_report():
     assert "Evidence: high_file_count_partition_count=5" in rendered
     assert "Thresholds: high_file_count_partition_count_critical=5" in rendered
     assert "Calculation Warnings" in rendered
+
+
+def test_operator_catalog_workflow_exports_selected_report_using_output_policy(
+    tmp_path,
+):
+    workflow = OperatorCatalogWorkflow(
+        list_catalog_tables=lambda: ("sales.orders",),
+        analyze_table=lambda table_name: _report(table_name),
+    )
+    analyzed_at = datetime(2026, 5, 21, 8, 30, tzinfo=timezone.utc)
+
+    run_operator_catalog_workflow(
+        workflow,
+        inspect_table="sales.orders",
+        output=io.StringIO(),
+        output_policy=OutputPolicy(
+            export_formats=("json", "markdown"),
+            export_directory=str(tmp_path),
+        ),
+        now=lambda: analyzed_at,
+    )
+
+    json_export = tmp_path / "sales-orders.json"
+    markdown_export = tmp_path / "sales-orders.md"
+    assert json_export.exists()
+    assert markdown_export.exists()
+    assert '"cache_status": "fresh"' in json_export.read_text()
+    assert analyzed_at.isoformat() in markdown_export.read_text()
+
+
+def test_operator_catalog_workflow_export_marks_fresh_selected_report_metadata(
+    tmp_path,
+):
+    overview_analyzed_at = datetime(2026, 5, 21, 8, 30, tzinfo=timezone.utc)
+    export_analyzed_at = datetime(2026, 5, 21, 9, 15, tzinfo=timezone.utc)
+    cache = FakeCache(
+        cached=OperatorCatalogOverview(
+            rows=(
+                {
+                    "table": "sales.orders",
+                    "status": "loaded",
+                    "cache_status": "cached",
+                },
+            ),
+            cache_status="cached",
+            last_analyzed_at=overview_analyzed_at,
+        )
+    )
+    workflow = OperatorCatalogWorkflow(
+        list_catalog_tables=lambda: ("sales.orders",),
+        analyze_table=lambda table_name: _report(table_name),
+        cache=cache,
+        cache_scope_key="analytics|sales",
+    )
+
+    run_operator_catalog_workflow(
+        workflow,
+        inspect_table="sales.orders",
+        output=io.StringIO(),
+        output_policy=OutputPolicy(
+            export_formats=("json",),
+            export_directory=str(tmp_path),
+        ),
+        now=lambda: export_analyzed_at,
+    )
+
+    assert '"cache_status": "fresh"' in (tmp_path / "sales-orders.json").read_text()
+    assert (
+        export_analyzed_at.isoformat() in (tmp_path / "sales-orders.json").read_text()
+    )
+    assert (
+        overview_analyzed_at.isoformat()
+        not in (tmp_path / "sales-orders.json").read_text()
+    )
+
+
+def test_operator_catalog_workflow_rejects_invalid_export_configuration(tmp_path):
+    workflow = OperatorCatalogWorkflow(
+        list_catalog_tables=lambda: ("sales.orders",),
+        analyze_table=lambda table_name: _report(table_name),
+    )
+
+    with pytest.raises(ValueError, match="Unsupported export format"):
+        run_operator_catalog_workflow(
+            workflow,
+            inspect_table="sales.orders",
+            output=io.StringIO(),
+            output_policy=OutputPolicy(
+                export_formats=("yaml",),
+                export_directory=str(tmp_path),
+            ),
+        )
 
 
 def test_operator_catalog_tables_are_listed_from_configured_catalog_source(monkeypatch):

@@ -97,3 +97,33 @@ def test_ui_policy_overrides_win_over_environment():
     assert config.runtime.cache_ttl_seconds == 60
     assert config.runtime.timeout_seconds == 2
     assert config.runtime.max_concurrency == 1
+
+
+def test_configuration_loads_output_policy_from_environment_and_ui_overrides():
+    config = AnalyzerConfiguration.from_environment(
+        {
+            "LHA_METADATA_LOCATION": "/tmp/orders.metadata.json",
+            "LHA_EXPORT_FORMATS": "json, markdown",
+            "LHA_EXPORT_DIRECTORY": "/tmp/from-environment",
+        },
+        ui_overrides={
+            "export_formats": ("markdown",),
+            "export_directory": "/tmp/from-ui",
+        },
+    )
+
+    assert config.output.export_formats == ("markdown",)
+    assert config.output.export_directory == "/tmp/from-ui"
+
+
+def test_configuration_loads_output_policy_from_environment():
+    config = AnalyzerConfiguration.from_environment(
+        {
+            "LHA_METADATA_LOCATION": "/tmp/orders.metadata.json",
+            "LHA_EXPORT_FORMATS": "json, markdown",
+            "LHA_EXPORT_DIRECTORY": "/tmp/report-exports",
+        }
+    )
+
+    assert config.output.export_formats == ("json", "markdown")
+    assert config.output.export_directory == "/tmp/report-exports"
