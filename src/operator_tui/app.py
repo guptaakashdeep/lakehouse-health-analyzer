@@ -8,7 +8,7 @@ from typing import Protocol, Sequence
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widgets import Input, ListView, Static
 
 from analysis.report import TableHealthReport
@@ -31,6 +31,16 @@ from workflows.table_detail import TableDetailWorkflow
 
 from . import _analyze_iceberg_table, _glue_catalog_properties
 from .export import TableReportExportWorkflow
+from .rendering import (
+    render_detail_state,
+    render_export_failure,
+    render_export_offer,
+    render_export_success,
+    render_header_chrome,
+    render_report_detail,
+    render_unsupported_detail,
+    render_warning_state,
+)
 from .theme import LayoutState, layout_state_for_size, semantic_status
 from .widgets import CatalogTable, NamespaceListItem, TableListItem
 
@@ -68,18 +78,49 @@ class OperatorCatalogBrowserApp(App[None]):
     }
 
     #catalog-header {
-        min-height: 3;
-        height: auto;
-        padding: 1 2;
-        background: #172025;
-        border: solid #2c3940;
+        height: 4;
+        padding: 0 1;
+        margin: 1 1 0 1;
+        background: #151a1e;
+        border: round #2c3940;
         color: #e7eff2;
+    }
+
+    #operator-toolbar {
+        height: auto;
+        min-height: 3;
+        margin: 1 1 0 1;
     }
 
     #filter-input {
         height: 3;
-        margin: 0 1;
-        border: solid #2c3940;
+        width: 1fr;
+        margin-right: 0;
+        background: #151b20;
+        border: round #2c3940;
+        color: #e7eff2;
+    }
+
+    #filter-input:focus {
+        border: round #42d9d1;
+    }
+
+    .toolbar-button {
+        height: 3;
+        width: auto;
+        min-width: 8;
+        margin-left: 1;
+        padding: 0 0;
+        content-align: center middle;
+        background: #202a30;
+        border: round #2c3940;
+        color: #e7eff2;
+        text-style: bold;
+    }
+
+    .toolbar-button.active {
+        border: round #42d9d1;
+        color: #42d9d1;
     }
 
     .hidden {
@@ -87,63 +128,143 @@ class OperatorCatalogBrowserApp(App[None]):
     }
 
     #workspace {
+        layout: horizontal;
         height: 1fr;
         min-height: 0;
+        margin: 1 1 0 1;
+    }
+
+    #catalog-column {
+        width: 34%;
+        height: 1fr;
+        min-height: 0;
+        margin-right: 1;
     }
 
     .browser-panel {
         height: 1fr;
         min-height: 0;
-        border: solid #2c3940;
+        border: round #2c3940;
         background: #171d22;
     }
 
     .browser-panel.active {
-        border: solid #42d9d1;
+        border: round #42d9d1;
     }
 
     #namespace-panel {
-        width: 24%;
+        width: 100%;
+        height: 32%;
+        margin-bottom: 1;
     }
 
     #table-panel {
-        width: 31%;
+        width: 100%;
+        height: 1fr;
     }
 
     #detail-column {
-        width: 45%;
+        width: 1fr;
         min-height: 0;
     }
 
     .panel-title {
-        height: 3;
-        padding: 1 1;
+        height: 2;
+        padding: 0 1;
         background: #1c242a;
+        content-align: left middle;
         text-style: bold;
         color: #e7eff2;
+    }
+
+    .panel-head {
+        height: 2;
+        background: #1c242a;
+        border-bottom: solid #2c3940;
+    }
+
+    .panel-title {
+        width: 1fr;
+        text-style: bold;
+    }
+
+    .panel-count {
+        width: auto;
+        min-width: 9;
+        padding: 0 1;
+        color: #74868e;
+        content-align: right middle;
+        text-align: right;
     }
 
     ListView {
         height: 1fr;
         background: #171d22;
+        padding: 0 1;
     }
 
     ListItem {
-        height: 3;
+        height: 2;
+        background: #171d22;
+        color: #aab8bd;
+    }
+
+    ListView > ListItem.--highlight {
+        background: #20282d;
+        color: #e7eff2;
+    }
+
+    ListView > ListItem.--highlight .selection-rail {
+        color: #42d9d1;
+        text-style: bold;
+    }
+
+    ListView > ListItem.--highlight .namespace-name,
+    ListView > ListItem.--highlight .table-name {
+        color: #e7eff2;
+        text-style: bold;
     }
 
     .table-row {
-        height: 3;
+        height: 2;
+    }
+
+    .namespace-row {
+        height: 2;
+    }
+
+    .selection-rail {
+        width: 1;
+        height: 2;
+        color: #26333a;
+        content-align: center middle;
+    }
+
+    .namespace-name {
+        width: 1fr;
+        padding: 0 1;
+        content-align: left middle;
+    }
+
+    .row-meta {
+        width: auto;
+        min-width: 9;
+        padding: 0 1;
+        color: #74868e;
+        content-align: right middle;
+        text-align: right;
     }
 
     .table-name {
         width: 1fr;
-        padding: 1 1;
+        padding: 0 1;
+        content-align: left middle;
     }
 
     .table-format {
         width: 12;
-        padding: 1 1;
+        padding: 0 1;
+        content-align: right middle;
         text-align: right;
         color: #74868e;
     }
@@ -192,23 +313,33 @@ class OperatorCatalogBrowserApp(App[None]):
 
     .table-cache {
         width: 9;
-        padding: 1 1;
+        padding: 0 1;
+        content-align: right middle;
         text-align: right;
     }
 
-    #detail-panel {
+    #detail-scroll {
         height: 1fr;
         min-height: 0;
+        background: #171d22;
+        scrollbar-color: #47606a;
+        scrollbar-background: #151b20;
+    }
+
+    #detail-panel {
+        height: auto;
+        min-height: 0;
         padding: 1 2;
-        overflow-y: auto;
+        background: #171d22;
     }
 
     #operator-footer {
+        height: 3;
         min-height: 3;
-        height: auto;
-        padding: 1 2;
+        padding: 0 2;
+        margin: 1 1;
         background: #151b20;
-        border: solid #2c3940;
+        border: round #2c3940;
         color: #aab8bd;
     }
 
@@ -231,17 +362,30 @@ class OperatorCatalogBrowserApp(App[None]):
         width: 100%;
     }
 
+    #workspace.layout-compact #catalog-column {
+        width: 100%;
+        height: 13;
+        margin-right: 0;
+        margin-bottom: 1;
+    }
+
     #workspace.layout-compact #namespace-panel {
-        height: 8;
+        height: 5;
     }
 
     #workspace.layout-compact #table-panel {
-        height: 10;
+        height: 7;
     }
 
     #workspace.layout-compact #detail-column {
         height: 1fr;
-        min-height: 8;
+        min-height: 5;
+    }
+
+    #operator-toolbar.layout-compact #filter-databases-action,
+    #operator-toolbar.layout-compact #filter-tables-action,
+    #operator-toolbar.layout-compact #setup-action {
+        display: none;
     }
 
     #workspace.layout-minimum {
@@ -282,7 +426,9 @@ class OperatorCatalogBrowserApp(App[None]):
         self.table_access = table_access
         self.context = context or OperatorTuiContext()
         self.output_policy = output_policy or OutputPolicy()
-        self.export_workflow = TableReportExportWorkflow(output_policy=self.output_policy)
+        self.export_workflow = TableReportExportWorkflow(
+            output_policy=self.output_policy
+        )
         self.setup_needed_message = setup_needed_message
         self.active_panel = "namespaces"
         self.filter_panel: str | None = None
@@ -301,19 +447,44 @@ class OperatorCatalogBrowserApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="catalog-header")
-        yield Input(
-            placeholder="Filter active panel", id="filter-input", classes="hidden"
-        )
-        with Horizontal(id="workspace"):
-            with Vertical(id="namespace-panel", classes="browser-panel active"):
-                yield Static("Databases", classes="panel-title", id="namespace-title")
-                yield ListView(id="namespace-list")
-            with Vertical(id="table-panel", classes="browser-panel"):
-                yield Static("Tables", classes="panel-title", id="table-title")
-                yield ListView(id="table-list")
+        with Horizontal(id="operator-toolbar"):
+            yield Input(
+                placeholder="Filter active panel: databases",
+                id="filter-input",
+            )
+            yield Static(
+                "Filter Databases",
+                id="filter-databases-action",
+                classes="toolbar-button active",
+            )
+            yield Static(
+                "Filter Tables",
+                id="filter-tables-action",
+                classes="toolbar-button",
+            )
+            yield Static("Refresh", id="refresh-action", classes="toolbar-button")
+            yield Static("Export", id="export-action", classes="toolbar-button")
+            yield Static("Setup", id="setup-action", classes="toolbar-button")
+        with Container(id="workspace"):
+            with Vertical(id="catalog-column"):
+                with Vertical(id="namespace-panel", classes="browser-panel active"):
+                    with Horizontal(classes="panel-head"):
+                        yield Static(
+                            "DATABASES", classes="panel-title", id="namespace-title"
+                        )
+                        yield Static("", classes="panel-count", id="namespace-count")
+                    yield ListView(id="namespace-list")
+                with Vertical(id="table-panel", classes="browser-panel"):
+                    with Horizontal(classes="panel-head"):
+                        yield Static("TABLES", classes="panel-title", id="table-title")
+                        yield Static("", classes="panel-count", id="table-count")
+                    yield ListView(id="table-list")
             with Vertical(id="detail-column", classes="browser-panel"):
-                yield Static("Details", classes="panel-title", id="detail-title")
-                yield Static("", id="detail-panel")
+                with Horizontal(classes="panel-head"):
+                    yield Static("DETAILS", classes="panel-title", id="detail-title")
+                    yield Static("", classes="panel-count", id="detail-count")
+                with VerticalScroll(id="detail-scroll"):
+                    yield Static("", id="detail-panel")
         yield Static("", id="minimum-size-message", classes="hidden")
         yield Static("", id="operator-footer")
 
@@ -323,11 +494,19 @@ class OperatorCatalogBrowserApp(App[None]):
         self.query_one("#namespace-list", ListView).focus()
         if self.setup_needed_message:
             self.freshness = "setup needed"
-            self.query_one("#detail-panel", Static).update(self.setup_needed_message)
+            self.query_one("#detail-panel", Static).update(
+                render_detail_state(
+                    "Setup required", self.setup_needed_message, status="warning"
+                )
+            )
             self._refresh_chrome()
             return
         self.query_one("#detail-panel", Static).update(
-            "Loading catalog namespaces in the background..."
+            render_detail_state(
+                "Loading catalog",
+                "Loading catalog namespaces in the background...",
+                status="info",
+            )
         )
         self.set_timer(0.01, self._start_namespace_load)
 
@@ -341,17 +520,16 @@ class OperatorCatalogBrowserApp(App[None]):
     async def _render_namespaces(self) -> None:
         list_view = self.query_one("#namespace-list", ListView)
         await list_view.clear()
-        namespaces = [
-            namespace
-            for namespace in self.namespaces
-            if _contains(namespace.display_name, self.namespace_filter)
-        ]
+        namespaces = self._current_namespaces()
         for namespace in namespaces:
+            table_count = self.tables_by_namespace.get(namespace.name)
+            meta = f"{len(table_count)} tables" if table_count is not None else ""
             await list_view.append(
-                NamespaceListItem(namespace.name, namespace.display_name)
+                NamespaceListItem(namespace.name, namespace.display_name, meta=meta)
             )
         if namespaces:
             list_view.index = 0
+        self._refresh_chrome()
 
     async def _load_namespaces(self, *, refresh: bool = False) -> None:
         self.freshness = "loading"
@@ -367,7 +545,7 @@ class OperatorCatalogBrowserApp(App[None]):
             self.freshness = listing.cache_status
             if listing.failures:
                 self.query_one("#detail-panel", Static).update(
-                    _catalog_warning_message(
+                    render_warning_state(
                         "Catalog warnings",
                         (
                             _scope_message(failure.scope, failure.message)
@@ -377,26 +555,42 @@ class OperatorCatalogBrowserApp(App[None]):
                 )
             elif self.namespaces:
                 self.query_one("#detail-panel", Static).update(
-                    "Choose a database to load tables."
+                    render_detail_state(
+                        "Databases loaded",
+                        "Choose a database to load tables.",
+                        status="healthy",
+                    )
                 )
             else:
                 self.query_one("#detail-panel", Static).update(
-                    "No catalog namespaces were found."
+                    render_detail_state(
+                        "No databases",
+                        "No catalog namespaces were found.",
+                        status="unknown",
+                    )
                 )
         except Exception as exc:
             self.freshness = "error"
             self.query_one("#detail-panel", Static).update(
-                f"Unable to list namespaces: {exc}"
+                render_detail_state(
+                    "Unable to list namespaces", str(exc), status="critical"
+                )
             )
         self._refresh_chrome()
 
-    async def _load_tables_for_selected_namespace(self, *, refresh: bool = False) -> None:
+    async def _load_tables_for_selected_namespace(
+        self, *, refresh: bool = False
+    ) -> None:
         if self.selected_namespace is None:
             return
         namespace_label = ".".join(self.selected_namespace)
         self.freshness = "loading"
         self.query_one("#detail-panel", Static).update(
-            f"Loading tables for {namespace_label}..."
+            render_detail_state(
+                "Loading tables",
+                f"Loading tables for {namespace_label}...",
+                status="info",
+            )
         )
         self._refresh_chrome()
         try:
@@ -422,7 +616,7 @@ class OperatorCatalogBrowserApp(App[None]):
             await self._render_tables()
             if listing.failures:
                 self.query_one("#detail-panel", Static).update(
-                    _catalog_warning_message(
+                    render_warning_state(
                         "Table warnings",
                         (
                             _scope_message(failure.scope, failure.message)
@@ -432,12 +626,20 @@ class OperatorCatalogBrowserApp(App[None]):
                 )
             else:
                 self.query_one("#detail-panel", Static).update(
-                    f"{len(tables)} tables loaded for {namespace_label}."
+                    render_detail_state(
+                        "Tables loaded",
+                        f"{len(tables)} tables loaded for {namespace_label}.",
+                        status="healthy",
+                    )
                 )
         except Exception as exc:
             self.freshness = "error"
             self.query_one("#detail-panel", Static).update(
-                f"Unable to list tables for {namespace_label}: {exc}"
+                render_detail_state(
+                    f"Unable to list tables for {namespace_label}",
+                    str(exc),
+                    status="critical",
+                )
             )
         self._refresh_chrome()
 
@@ -449,6 +651,7 @@ class OperatorCatalogBrowserApp(App[None]):
             await list_view.append(TableListItem(table))
         if tables:
             list_view.index = 0
+        self._refresh_chrome()
 
     def _current_tables(self) -> tuple[CatalogTable, ...]:
         if self.selected_namespace is None:
@@ -457,6 +660,13 @@ class OperatorCatalogBrowserApp(App[None]):
             table
             for table in self.tables_by_namespace.get(self.selected_namespace, ())
             if _contains(table.name, self.table_filter)
+        )
+
+    def _current_namespaces(self) -> tuple[CatalogNamespace, ...]:
+        return tuple(
+            namespace
+            for namespace in self.namespaces
+            if _contains(namespace.display_name, self.namespace_filter)
         )
 
     async def action_select(self) -> None:
@@ -494,7 +704,7 @@ class OperatorCatalogBrowserApp(App[None]):
         self.export_prompt_active = False
         if item.table.table_format == "NON-ICEBERG":
             self.query_one("#detail-panel", Static).update(
-                _unsupported_detail(item.table.identifier)
+                render_unsupported_detail(item.table.identifier)
             )
             self._refresh_chrome()
             return
@@ -506,7 +716,11 @@ class OperatorCatalogBrowserApp(App[None]):
         self.analysis_calls += 1
         self.freshness = "loading"
         self.query_one("#detail-panel", Static).update(
-            f"Analyzing {table.identifier}..."
+            render_detail_state(
+                "Analyzing table",
+                f"Analyzing {table.identifier}...",
+                status="info",
+            )
         )
         self._refresh_chrome()
         try:
@@ -530,7 +744,12 @@ class OperatorCatalogBrowserApp(App[None]):
                 self.selected_report = report
                 self.selected_report_result = analysis_result
                 self.export_prompt_active = False
-                self.query_one("#detail-panel", Static).update(_report_detail(report))
+                self.query_one("#detail-panel", Static).update(
+                    render_report_detail(
+                        report,
+                        cache_status=analysis_result.cache_status,
+                    )
+                )
         except UnsupportedTableError as exc:
             updated = replace(table, table_format="NON-ICEBERG", freshness="fresh")
             self._replace_table(updated)
@@ -542,7 +761,7 @@ class OperatorCatalogBrowserApp(App[None]):
                 self.selected_report_result = None
                 self.export_prompt_active = False
                 self.query_one("#detail-panel", Static).update(
-                    _unsupported_detail(table.identifier, message=str(exc))
+                    render_unsupported_detail(table.identifier, message=str(exc))
                 )
         except Exception as exc:
             self.freshness = "fresh"
@@ -551,7 +770,11 @@ class OperatorCatalogBrowserApp(App[None]):
                 self.selected_report_result = None
                 self.export_prompt_active = False
                 self.query_one("#detail-panel", Static).update(
-                    f"Unable to analyze {table.identifier}: {exc}"
+                    render_detail_state(
+                        f"Unable to analyze {table.identifier}",
+                        str(exc),
+                        status="critical",
+                    )
                 )
         self._refresh_chrome()
 
@@ -567,7 +790,6 @@ class OperatorCatalogBrowserApp(App[None]):
     def action_filter(self) -> None:
         self.filter_panel = self.active_panel
         filter_input = self.query_one("#filter-input", Input)
-        filter_input.remove_class("hidden")
         filter_input.value = (
             self.namespace_filter
             if self.filter_panel == "namespaces"
@@ -579,15 +801,20 @@ class OperatorCatalogBrowserApp(App[None]):
     async def action_clear_filter(self) -> None:
         if self.export_prompt_active:
             self.export_prompt_active = False
-            if self.selected_report is not None:
+            if (
+                self.selected_report is not None
+                and self.selected_report_result is not None
+            ):
                 self.query_one("#detail-panel", Static).update(
-                    _report_detail(self.selected_report)
+                    render_report_detail(
+                        self.selected_report,
+                        cache_status=self.selected_report_result.cache_status,
+                    )
                 )
             self._refresh_chrome()
             return
         filter_input = self.query_one("#filter-input", Input)
         filter_input.value = ""
-        filter_input.add_class("hidden")
         if self.filter_panel == "tables" or self.active_panel == "tables":
             self.table_filter = ""
             await self._render_tables()
@@ -640,14 +867,20 @@ class OperatorCatalogBrowserApp(App[None]):
         if self.selected_report_result is not None:
             self.export_prompt_active = True
             self.query_one("#detail-panel", Static).update(
-                self.export_workflow.export_offer(
-                    table_name=self.selected_report_result.report.table_name
+                render_export_offer(
+                    self.export_workflow.export_offer(
+                        table_name=self.selected_report_result.report.table_name
+                    )
                 )
             )
             self._refresh_chrome()
             return
         self.query_one("#detail-panel", Static).update(
-            "Export is available after a table has been analyzed."
+            render_detail_state(
+                "Export unavailable",
+                "Export is available after a table has been analyzed.",
+                status="unknown",
+            )
         )
 
     def action_export_json(self) -> None:
@@ -672,19 +905,25 @@ class OperatorCatalogBrowserApp(App[None]):
                 analyzed_at=analyzed_at,
             )
         except Exception as exc:
-            self.query_one("#detail-panel", Static).update(f"Export failed: {exc}")
+            self.query_one("#detail-panel", Static).update(
+                render_export_failure(str(exc))
+            )
             self.export_prompt_active = False
             self._refresh_chrome()
             return
         self.query_one("#detail-panel", Static).update(
-            _export_success_message(written_paths)
+            render_export_success(written_paths)
         )
         self.export_prompt_active = False
         self._refresh_chrome()
 
     def action_setup(self) -> None:
         self.query_one("#detail-panel", Static).update(
-            "Open setup to configure catalog access."
+            render_detail_state(
+                "Setup",
+                "Open setup to configure catalog access.",
+                status="info",
+            )
         )
 
     def _active_list(self) -> ListView:
@@ -702,17 +941,30 @@ class OperatorCatalogBrowserApp(App[None]):
 
     def _refresh_chrome(self) -> None:
         namespace = ".".join(self.selected_namespace or ()) or "none"
-        freshness = semantic_status(self.freshness).label
-        header = (
-            "Lakehouse Health Analyzer | "
-            f"Catalog {self.context.catalog_name} | "
-            f"Profile {self.context.profile or 'default'} | "
-            f"Chain {self.context.default_chain} | "
-            f"Region {self.context.region or 'default'} | "
-            f"Namespace {namespace} | "
-            f"Freshness {freshness}"
+        freshness = semantic_status(self.freshness)
+        self.query_one("#catalog-header", Static).update(
+            render_header_chrome(
+                catalog_name=self.context.catalog_name,
+                profile=self.context.profile or "default",
+                default_chain=self.context.default_chain,
+                region=self.context.region or "default",
+                namespace=namespace,
+                freshness=freshness.label,
+            )
         )
-        self.query_one("#catalog-header", Static).update(header)
+
+        filter_input = self.query_one("#filter-input", Input)
+        filter_scope = self.filter_panel or self.active_panel
+        filter_input.placeholder = f"Filter active panel: {_panel_label(filter_scope)}"
+
+        self.query_one("#namespace-count", Static).update(
+            f"{len(self._current_namespaces())} shown"
+        )
+        self.query_one("#table-count", Static).update(
+            f"{len(self._current_tables())} shown"
+        )
+        self.query_one("#detail-count", Static).update(self._detail_count_label())
+
         self.query_one("#operator-footer", Static).update(self._footer_text())
         for panel_id, panel_name in (
             ("#namespace-panel", "namespaces"),
@@ -720,16 +972,32 @@ class OperatorCatalogBrowserApp(App[None]):
         ):
             panel = self.query_one(panel_id)
             panel.set_class(self.active_panel == panel_name, "active")
+        self.query_one("#filter-databases-action").set_class(
+            self.active_panel == "namespaces", "active"
+        )
+        self.query_one("#filter-tables-action").set_class(
+            self.active_panel == "tables", "active"
+        )
+
+    def _detail_count_label(self) -> str:
+        if self.selected_report_result is not None:
+            return semantic_status(self.selected_report_result.cache_status).label
+        if self.selected_table is not None:
+            return semantic_status(self.selected_table.table_format).label
+        return ""
 
     def _apply_layout_state(self, width: int, height: int) -> None:
         self.layout_state = layout_state_for_size(width, height)
         workspace = self.query_one("#workspace")
+        toolbar = self.query_one("#operator-toolbar")
         minimum_message = self.query_one("#minimum-size-message", Static)
         for layout_class in ("layout-wide", "layout-compact", "layout-minimum"):
             workspace.set_class(
                 self.layout_state.workspace_class == layout_class, layout_class
             )
         workspace.set_class(not self.layout_state.show_workspace, "hidden")
+        toolbar.set_class(not self.layout_state.show_workspace, "hidden")
+        toolbar.set_class(self.layout_state.compact_chrome, "layout-compact")
         minimum_message.set_class(self.layout_state.show_workspace, "hidden")
         minimum_message.update(self.layout_state.minimum_message)
 
@@ -751,6 +1019,12 @@ class OperatorCatalogBrowserApp(App[None]):
         if self.layout_state.compact_chrome:
             return "Enter Analyze | / Filter | r Refresh | e Export | q Quit"
         return "Enter Analyze | / Filter tables | r Refresh | e Export | q Quit"
+
+
+def _panel_label(panel: str) -> str:
+    if panel == "tables":
+        return "tables"
+    return "databases"
 
 
 class ConfiguredCatalogTableAccess:
@@ -781,7 +1055,9 @@ class ConfiguredCatalogTableAccess:
             table_name=parts[-1],
         )
         try:
-            return _analyze_iceberg_table(replace(self.config, table_source=table_source))
+            return _analyze_iceberg_table(
+                replace(self.config, table_source=table_source)
+            )
         except Exception as exc:
             if _is_unsupported_error(exc):
                 raise UnsupportedTableError(_unsupported_error_message(exc)) from exc
@@ -810,7 +1086,9 @@ class WorkflowCatalogTableAccess:
                 result.message or f"{table_identifier} is not an Iceberg table"
             )
         if result.report is None:
-            raise RuntimeError(result.message or f"Unable to analyze {table_identifier}")
+            raise RuntimeError(
+                result.message or f"Unable to analyze {table_identifier}"
+            )
         return TableAnalysisResult(
             report=result.report,
             cache_status=result.cache_status,
@@ -947,8 +1225,7 @@ def _catalog_table_row_for_identifier(table_identifier: str) -> CatalogTableRow:
 
 def _catalog_table_listing(
     namespace: tuple[str, ...],
-    raw_listing: Sequence[CatalogTable | CatalogTableRow | str]
-    | CatalogTableListing,
+    raw_listing: Sequence[CatalogTable | CatalogTableRow | str] | CatalogTableListing,
 ) -> CatalogTableListing:
     if isinstance(raw_listing, CatalogTableListing):
         return raw_listing
@@ -959,60 +1236,10 @@ def _contains(value: str, needle: str) -> bool:
     return needle.lower() in value.lower()
 
 
-def _report_detail(report: TableHealthReport) -> str:
-    lines = [
-        f"Table Health Report: {report.table_name}",
-        f"Source: {report.table_source.kind} {report.table_source.location}",
-        "",
-        "Maintenance Recommendations",
-    ]
-    if report.maintenance_recommendations:
-        for recommendation in report.maintenance_recommendations:
-            lines.append(
-                f"{recommendation.severity.upper()}: "
-                f"{recommendation.recommendation_type.replace('_', ' ').title()}"
-            )
-            lines.append(recommendation.rationale)
-    else:
-        lines.append("None")
-
-    lines.extend(("", "Calculation Warnings"))
-    if report.calculation_warnings:
-        lines.extend(
-            f"{warning.metric_key}: {warning.message}"
-            for warning in report.calculation_warnings
-        )
-    else:
-        lines.append("None")
-
-    lines.extend(("", "Health Metrics"))
-    lines.extend(
-        f"{metric.label}: {metric.value} {metric.unit or ''}".rstrip()
-        for metric in report.health_metrics
-    )
-    return "\n".join(lines)
-
-
-def _catalog_warning_message(title: str, warnings: Sequence[str]) -> str:
-    lines = [title]
-    lines.extend(f"- {warning}" for warning in warnings)
-    return "\n".join(lines)
-
-
 def _scope_message(scope: str, message: str) -> str:
     if scope:
         return f"{scope}: {message}"
     return message
-
-
-def _unsupported_detail(table_identifier: str, *, message: str = "") -> str:
-    lines = [
-        f"{table_identifier} is NON-ICEBERG and unsupported.",
-        "Use Left to pick another table or r to refresh and retry analysis.",
-    ]
-    if message:
-        lines.extend(("", message))
-    return "\n".join(lines)
 
 
 def _is_unsupported_error(exc: Exception) -> bool:
@@ -1045,9 +1272,3 @@ def _table_analysis_result(
         cache_status="fresh",
         analyzed_at=datetime.now(timezone.utc),
     )
-
-
-def _export_success_message(written_paths: Sequence[object]) -> str:
-    lines = ["Exported report to:"]
-    lines.extend(f"- {path}" for path in written_paths)
-    return "\n".join(lines)

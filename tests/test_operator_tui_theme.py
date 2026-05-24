@@ -1,7 +1,11 @@
 import asyncio
+import io
 
+from rich.console import Console
 from operator_tui.app import OperatorCatalogBrowserApp
 from operator_tui.theme import layout_state_for_size, semantic_status
+from textual.widget import Widget
+from textual.widgets import Input
 from textual.widgets import Static
 
 
@@ -63,9 +67,7 @@ def test_catalog_browser_applies_responsive_layout_classes_at_startup():
         compact_app = OperatorCatalogBrowserApp(setup_needed_message="Setup required.")
         async with compact_app.run_test(size=(96, 28)):
             assert compact_app.query_one("#workspace").has_class("layout-compact")
-            assert "SETUP" in str(
-                compact_app.query_one("#catalog-header", Static).content
-            )
+            assert "SETUP" in _text(compact_app, "#catalog-header")
 
         minimum_app = OperatorCatalogBrowserApp(setup_needed_message="Setup required.")
         async with minimum_app.run_test(size=(58, 15)):
@@ -75,3 +77,28 @@ def test_catalog_browser_applies_responsive_layout_classes_at_startup():
             )
 
     asyncio.run(run_app())
+
+
+def _text(app, selector) -> str:
+    return _widget_text(app.query_one(selector))
+
+
+def _widget_text(widget: Widget) -> str:
+    if isinstance(widget, Static):
+        return _content_text(widget.content)
+    if isinstance(widget, Input):
+        return widget.value or widget.placeholder
+    return " ".join(text for child in widget.children if (text := _widget_text(child)))
+
+
+def _content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    console = Console(
+        width=120,
+        record=True,
+        color_system=None,
+        file=io.StringIO(),
+    )
+    console.print(content)
+    return console.export_text(styles=False)

@@ -71,8 +71,9 @@ class CachedTableClassification(Protocol):
 
 
 class CatalogBrowserCache(Protocol):
-    def read_namespace_listing(self, scope_key: str) -> CatalogNamespaceListing | None:
-        ...
+    def read_namespace_listing(
+        self, scope_key: str
+    ) -> CatalogNamespaceListing | None: ...
 
     def read_stale_namespace_listing(
         self, scope_key: str
@@ -111,20 +112,24 @@ class CatalogBrowserWorkflow:
     def list_namespaces(self, *, refresh: bool = False) -> CatalogNamespaceListing:
         if self.cache is not None and not refresh:
             cached_listing = self.cache.read_namespace_listing(self.cache_scope_key)
-            if cached_listing is not None:
+            if cached_listing is not None and _cached_listing_is_usable(cached_listing):
                 return cached_listing
         try:
             listing = _fresh_namespace_listing(self.catalog_access.list_namespaces())
         except Exception as exc:
-            if self.cache is not None:
-                stale = self.cache.read_stale_namespace_listing(self.cache_scope_key)
-                if stale is not None:
-                    return replace(
-                        stale,
-                        cache_status="stale",
-                        cache_message=str(exc) or exc.__class__.__name__,
-                    )
+            stale = self._stale_namespace_listing(str(exc) or exc.__class__.__name__)
+            if stale is not None:
+                return stale
             raise
+        if listing.failures:
+            stale = None
+            if not listing.namespaces:
+                stale = self._stale_namespace_listing(
+                    _failures_message(listing.failures)
+                )
+            if stale is not None:
+                return stale
+            return listing
         if self.cache is not None:
             return self.cache.write_namespace_listing(self.cache_scope_key, listing)
         return listing
@@ -133,34 +138,70 @@ class CatalogBrowserWorkflow:
         self, namespace: tuple[str, ...], *, refresh: bool = False
     ) -> CatalogTableListing:
         if self.cache is not None and not refresh:
-            cached_listing = self.cache.read_table_listing(self.cache_scope_key, namespace)
-            if cached_listing is not None:
+            cached_listing = self.cache.read_table_listing(
+                self.cache_scope_key, namespace
+            )
+            if cached_listing is not None and _cached_listing_is_usable(cached_listing):
                 return self._apply_cached_classifications(cached_listing)
         try:
             fresh_listing = _fresh_table_listing(
                 self.catalog_access.list_tables(namespace)
             )
         except Exception as exc:
-            if self.cache is not None:
-                stale = self.cache.read_stale_table_listing(
-                    self.cache_scope_key, namespace
-                )
-                if stale is not None:
-                    return replace(
-                        stale,
-                        cache_status="stale",
-                        cache_message=str(exc) or exc.__class__.__name__,
-                    )
+            stale = self._stale_table_listing(
+                namespace,
+                str(exc) or exc.__class__.__name__,
+            )
+            if stale is not None:
+                return stale
             raise
         listing = fresh_listing
+        if self.cache is not None and not refresh:
+            listing = self._apply_cached_classifications(fresh_listing)
+        if listing.failures:
+            stale = None
+            if not listing.rows:
+                stale = self._stale_table_listing(
+                    namespace,
+                    _failures_message(listing.failures),
+                )
+            if stale is not None:
+                return stale
+            return listing
         if self.cache is not None:
-            if not refresh:
-                listing = self._apply_cached_classifications(fresh_listing)
             self.cache.write_table_listing(
                 self.cache_scope_key, namespace, fresh_listing
             )
             return listing
         return listing
+
+    def _stale_namespace_listing(
+        self, cache_message: str
+    ) -> CatalogNamespaceListing | None:
+        if self.cache is None:
+            return None
+        stale = self.cache.read_stale_namespace_listing(self.cache_scope_key)
+        if stale is None or not _cached_listing_is_usable(stale):
+            return None
+        return replace(
+            stale,
+            cache_status="stale",
+            cache_message=cache_message,
+        )
+
+    def _stale_table_listing(
+        self, namespace: tuple[str, ...], cache_message: str
+    ) -> CatalogTableListing | None:
+        if self.cache is None:
+            return None
+        stale = self.cache.read_stale_table_listing(self.cache_scope_key, namespace)
+        if stale is None or not _cached_listing_is_usable(stale):
+            return None
+        return replace(
+            stale,
+            cache_status="stale",
+            cache_message=cache_message,
+        )
 
     def _apply_cached_classifications(
         self, listing: CatalogTableListing
@@ -170,8 +211,7 @@ class CatalogBrowserWorkflow:
         return replace(
             listing,
             rows=tuple(
-                _row_with_cached_classification(self.cache, row)
-                for row in listing.rows
+                _row_with_cached_classification(self.cache, row) for row in listing.rows
             ),
         )
 
@@ -197,7 +237,23 @@ def configured_catalog_browser_workflow(
     )
 
 
-def _fresh_namespace_listing(listing: CatalogNamespaceListing) -> CatalogNamespaceListing:
+def _cached_listing_is_usable(
+    listing: CatalogNamespaceListing | CatalogTableListing,
+) -> bool:
+    return not listing.failures
+
+
+def _failures_message(failures: tuple[CatalogBrowserFailure, ...]) -> str:
+    messages = tuple(
+        f"{failure.scope}: {failure.message}" if failure.scope else failure.message
+        for failure in failures
+    )
+    return "; ".join(messages) or "catalog listing returned failures"
+
+
+def _fresh_namespace_listing(
+    listing: CatalogNamespaceListing,
+) -> CatalogNamespaceListing:
     return replace(listing, cache_status="fresh", cache_message="")
 
 

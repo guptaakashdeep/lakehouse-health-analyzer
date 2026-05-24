@@ -1,11 +1,15 @@
 import asyncio
+import io
 import json
 import time
 from datetime import datetime, timezone
 from threading import Event
 
+from rich.console import Console
 from analysis.report import (
+    CalculationWarning,
     HealthMetric,
+    MaintenanceRecommendation,
     TableEvolutionHistory,
     TableHealthReport,
     TableSource,
@@ -22,7 +26,9 @@ from operator_tui.app import (
     WorkflowCatalogTableAccess,
     configured_operator_catalog_browser_app,
 )
-from operator_tui.widgets import CatalogTable
+from operator_tui.rendering import render_report_detail
+from operator_tui.widgets import SELECTION_RAIL, CatalogTable
+from textual.widget import Widget
 from textual.widgets import Input, ListView, Static
 from workflows.catalog_browser import (
     CatalogBrowserFailure,
@@ -55,6 +61,7 @@ def test_operator_catalog_browser_shell_renders_before_namespace_loading_finishe
             assert "Catalog analytics" in _text(app, "#catalog-header")
             await pilot.pause(0.25)
             assert _list_labels(app, "#namespace-list") == ["sales"]
+            assert "Filter Databases" in _text(app, "#operator-toolbar")
 
     asyncio.run(run_app())
 
@@ -102,8 +109,13 @@ def test_operator_catalog_browser_populates_tables_lazily_sorted_by_namespace():
             assert "Profile dev" in header
             assert "Chain default" in header
             assert "Region us-east-1" in header
-            assert "Namespace sales" in header
-            assert "Freshness FRESH" in header
+            assert "Database sales" in header
+            assert "FRESH" in header
+            assert "Filter Tables" in _text(app, "#operator-toolbar")
+            assert "2 shown" in _text(app, "#namespace-count")
+            assert "3 shown" in _text(app, "#table-count")
+            assert SELECTION_RAIL in _text(app, "#namespace-list")
+            assert SELECTION_RAIL in _text(app, "#table-list")
             assert "Enter Analyze" in _text(app, "#operator-footer")
 
     asyncio.run(run_app())
@@ -140,7 +152,7 @@ def test_operator_catalog_browser_filter_applies_to_active_panel_and_escape_clea
             await pilot.press("escape")
             await pilot.pause(0.05)
             assert _table_names(app) == ["Customers", "LineItems", "Orders"]
-            assert app.query_one("#filter-input", Input).has_class("hidden")
+            assert app.query_one("#filter-input", Input).value == ""
 
     asyncio.run(run_app())
 
@@ -176,7 +188,10 @@ def test_operator_catalog_browser_highlight_does_not_analyze_until_enter():
             await pilot.pause(0.05)
             assert table_access.analyze_calls == [("sales.orders", False)]
             assert app.analysis_calls == 1
-            assert "Table Health Report: sales.orders" in _text(app, "#detail-panel")
+            detail = _text(app, "#detail-panel")
+            assert "sales.orders" in detail
+            assert "RECOMMENDATIONS" in detail
+            assert "FILES" in detail
             assert _table_formats(app) == ["UNKNOWN", "ICEBERG"]
 
     asyncio.run(run_app())
@@ -188,11 +203,7 @@ def test_operator_catalog_browser_pressing_e_offers_export_formats_for_selected_
             FakeNamespaceAccess(namespaces=(CatalogNamespace(("sales",), "sales"),))
         ),
         table_access=FakeTableAccess(
-            tables={
-                ("sales",): (
-                    CatalogTable(("sales",), "orders", "sales.orders"),
-                )
-            }
+            tables={("sales",): (CatalogTable(("sales",), "orders", "sales.orders"),)}
         ),
     )
 
@@ -214,6 +225,29 @@ def test_operator_catalog_browser_pressing_e_offers_export_formats_for_selected_
             assert "3 Both" in detail
 
     asyncio.run(run_app())
+
+
+def test_operator_tui_detail_renders_snapshot_expiration_readably():
+    detail = _content_text(render_report_detail(_snapshot_expiration_report()))
+
+    assert "Snapshot Expiration" in detail
+    assert "Expire eligible retained snapshots" in detail
+    assert "Evidence" in detail
+    assert "Expirable Snapshot Candidate Count  2" in detail
+    assert "Oldest Snapshot Age Days            871" in detail
+    assert "Thresholds" in detail
+    assert "Snapshot Retention Days                  30" in detail
+    assert "Expirable Snapshot Candidate Count Info  1" in detail
+    assert "expirable_snapshot_candidate_count" not in detail
+
+
+def test_operator_tui_detail_uses_semantic_color_styles():
+    detail = render_report_detail(_snapshot_expiration_report())
+    styles = {str(span.style) for span in detail.spans}
+
+    assert any("#42d9d1" in style for style in styles)
+    assert any("#f3c85f" in style for style in styles)
+    assert any("#72dc8f" in style for style in styles)
 
 
 def test_operator_catalog_browser_export_writes_selected_formats_to_configured_destination(
@@ -242,8 +276,8 @@ def test_operator_catalog_browser_export_writes_selected_formats_to_configured_d
 
             detail = _text(app, "#detail-panel")
             assert "Exported report to:" in detail
-            assert str(tmp_path / "sales-orders.json") in detail
-            assert str(tmp_path / "sales-orders.md") in detail
+            assert "sales-orders.json" in detail
+            assert "sales-orders.md" in detail
             assert (tmp_path / "sales-orders.json").exists()
             assert (tmp_path / "sales-orders.md").exists()
 
@@ -343,7 +377,7 @@ def test_operator_catalog_browser_export_failure_is_concise_and_keeps_tui_usable
             await pilot.pause(0.05)
 
             detail = _text(app, "#detail-panel")
-            assert detail.startswith("Export failed:")
+            assert "Export failed" in detail
             assert "does not exist" in detail
 
             await pilot.press("j")
@@ -356,9 +390,7 @@ def test_operator_catalog_browser_export_failure_is_concise_and_keeps_tui_usable
 def test_operator_catalog_browser_unsupported_analysis_promotes_non_iceberg():
     table_access = FakeTableAccess(
         tables={
-            ("sales",): (
-                CatalogTable(("sales",), "legacy_view", "sales.legacy_view"),
-            )
+            ("sales",): (CatalogTable(("sales",), "legacy_view", "sales.legacy_view"),)
         },
         analyze_results={
             "sales.legacy_view": UnsupportedTableError("table is not an iceberg table")
@@ -394,7 +426,9 @@ def test_operator_catalog_browser_analysis_failure_stays_recoverable_and_ui_usab
                 CatalogTable(("sales",), "orders", "sales.orders"),
             )
         },
-        analyze_results={"sales.orders": RuntimeError("catalog temporarily unavailable")},
+        analyze_results={
+            "sales.orders": RuntimeError("catalog temporarily unavailable")
+        },
     )
     app = OperatorCatalogBrowserApp(
         namespace_workflow=CatalogBrowserWorkflow(
@@ -420,7 +454,7 @@ def test_operator_catalog_browser_analysis_failure_stays_recoverable_and_ui_usab
             await pilot.press("k")
             await pilot.press("enter")
             await pilot.pause(0.05)
-            assert "Table Health Report: sales.customers" in _text(app, "#detail-panel")
+            assert "sales.customers" in _text(app, "#detail-panel")
             assert _table_formats(app) == ["ICEBERG", "UNKNOWN"]
 
     asyncio.run(run_app())
@@ -479,7 +513,7 @@ def test_operator_catalog_browser_setup_needed_state_does_not_call_catalog():
             await pilot.pause()
             assert namespace_access.list_calls == 0
             assert "Setup is required" in _text(app, "#detail-panel")
-            assert "Freshness SETUP NEEDED" in _text(app, "#catalog-header")
+            assert "SETUP NEEDED" in _text(app, "#catalog-header")
 
     asyncio.run(run_app())
 
@@ -490,11 +524,7 @@ def test_operator_catalog_browser_surfaces_namespace_warnings_without_blocking_u
         failures=(CatalogBrowserFailure(scope="namespaces", message="glue throttled"),),
     )
     table_access = FakeTableAccess(
-        tables={
-            ("sales",): (
-                CatalogTable(("sales",), "orders", "sales.orders"),
-            )
-        }
+        tables={("sales",): (CatalogTable(("sales",), "orders", "sales.orders"),)}
     )
     app = OperatorCatalogBrowserApp(
         namespace_workflow=CatalogBrowserWorkflow(namespace_access),
@@ -693,7 +723,9 @@ def test_configured_operator_catalog_browser_app_wires_cache_backed_workflows(
         created["browser_scope"] = cache_scope_key
         return browser_workflow
 
-    monkeypatch.setattr("operator_tui.app.OperatorCache", lambda path, ttl_seconds: cache)
+    monkeypatch.setattr(
+        "operator_tui.app.OperatorCache", lambda path, ttl_seconds: cache
+    )
     monkeypatch.setattr(
         "operator_tui.app.default_catalog_overview_cache_path",
         lambda: tmp_path / "operator-cache.duckdb",
@@ -762,7 +794,28 @@ class FakeTableAccess:
 
 
 def _text(app, selector) -> str:
-    return str(app.query_one(selector, Static).content)
+    return _widget_text(app.query_one(selector))
+
+
+def _widget_text(widget: Widget) -> str:
+    if isinstance(widget, Static):
+        return _content_text(widget.content)
+    if isinstance(widget, Input):
+        return widget.value or widget.placeholder
+    return " ".join(text for child in widget.children if (text := _widget_text(child)))
+
+
+def _content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    console = Console(
+        width=160,
+        record=True,
+        color_system=None,
+        file=io.StringIO(),
+    )
+    console.print(content)
+    return console.export_text(styles=False)
 
 
 def _list_labels(app, selector) -> list[str]:
@@ -787,6 +840,52 @@ def _table_health_report(table_identifier: str) -> TableHealthReport:
     return TableHealthReport(
         table_name=table_identifier,
         table_source=TableSource(kind="glue_catalog_table", location=table_identifier),
+        health_metrics=(
+            HealthMetric(
+                key="data_file_count",
+                label="Data File Count",
+                value=7,
+                unit="files",
+                source="test",
+            ),
+        ),
+        display_statistics=(),
+        table_evolution_history=TableEvolutionHistory(),
+    )
+
+
+def _snapshot_expiration_report() -> TableHealthReport:
+    return TableHealthReport(
+        table_name="blogs_db.yellow_taxi_trips_mor",
+        table_source=TableSource(
+            kind="glue_catalog_table",
+            location="glue.blogs_db.yellow_taxi_trips_mor",
+        ),
+        maintenance_recommendations=(
+            MaintenanceRecommendation(
+                recommendation_type="snapshot_expiration",
+                severity="info",
+                rationale=(
+                    "Expire eligible retained snapshots under the configured "
+                    "retention policy to reduce retained metadata and storage "
+                    "pressure."
+                ),
+                evidence={
+                    "expirable_snapshot_candidate_count": 2,
+                    "oldest_snapshot_age_days": 871,
+                },
+                thresholds={
+                    "snapshot_retention_days": 30,
+                    "expirable_snapshot_candidate_count_info": 1,
+                },
+            ),
+        ),
+        calculation_warnings=(
+            CalculationWarning(
+                metric_key="table_evolution_history",
+                message="Iceberg retained metadata history is incomplete or pruned.",
+            ),
+        ),
         health_metrics=(
             HealthMetric(
                 key="data_file_count",

@@ -5,6 +5,7 @@ from analysis.report import HealthMetric, TableHealthReport, TableSource
 from configuration import AnalyzerConfiguration, GlueCatalogTableSourceConfiguration
 from operator_cache import OperatorCache
 from workflows.catalog_browser import (
+    CatalogBrowserFailure,
     CatalogBrowserWorkflow,
     CatalogNamespace,
     CatalogNamespaceListing,
@@ -88,6 +89,100 @@ def test_cached_table_listing_does_not_extend_expired_classification_ttl(tmp_pat
     assert access.requested_table_namespaces == [("sales",)]
 
 
+def test_catalog_browser_workflow_does_not_reuse_cached_namespace_failures(tmp_path):
+    cache = OperatorCache(tmp_path / "operator-cache.duckdb")
+    cache.write_namespace_listing(
+        "analytics",
+        CatalogNamespaceListing(
+            namespaces=(),
+            failures=(
+                CatalogBrowserFailure(
+                    scope="namespaces",
+                    message="SSO session expired",
+                ),
+            ),
+        ),
+    )
+    access = FakeCatalogAccess(
+        namespaces=CatalogNamespaceListing(
+            namespaces=(CatalogNamespace(name=("sales",), display_name="sales"),)
+        )
+    )
+    workflow = CatalogBrowserWorkflow(
+        catalog_access=access,
+        cache=cache,
+        cache_scope_key="analytics",
+    )
+
+    listing = workflow.list_namespaces()
+
+    assert listing.cache_status == "fresh"
+    assert [namespace.display_name for namespace in listing.namespaces] == ["sales"]
+    assert access.namespace_calls == 1
+
+
+def test_catalog_browser_workflow_does_not_cache_namespace_failure_listings(tmp_path):
+    cache = OperatorCache(tmp_path / "operator-cache.duckdb")
+    access = FakeCatalogAccess(
+        namespaces=CatalogNamespaceListing(
+            namespaces=(),
+            failures=(
+                CatalogBrowserFailure(
+                    scope="namespaces",
+                    message="SSO session expired",
+                ),
+            ),
+        )
+    )
+    workflow = CatalogBrowserWorkflow(
+        catalog_access=access,
+        cache=cache,
+        cache_scope_key="analytics",
+    )
+
+    failed = workflow.list_namespaces()
+    access.namespaces = CatalogNamespaceListing(
+        namespaces=(CatalogNamespace(name=("sales",), display_name="sales"),)
+    )
+    recovered = workflow.list_namespaces()
+
+    assert failed.failures[0].message == "SSO session expired"
+    assert recovered.cache_status == "fresh"
+    assert [namespace.display_name for namespace in recovered.namespaces] == ["sales"]
+    assert access.namespace_calls == 2
+
+
+def test_catalog_browser_workflow_does_not_cache_table_listing_failures(tmp_path):
+    cache = OperatorCache(tmp_path / "operator-cache.duckdb")
+    access = FakeCatalogAccess(
+        tables=CatalogTableListing(
+            namespace=("sales",),
+            rows=(),
+            failures=(
+                CatalogBrowserFailure(
+                    scope="sales",
+                    message="SSO session expired",
+                ),
+            ),
+        )
+    )
+    workflow = CatalogBrowserWorkflow(
+        catalog_access=access,
+        cache=cache,
+        cache_scope_key="analytics",
+    )
+
+    failed = workflow.list_tables(("sales",))
+    access.tables = CatalogTableListing(
+        namespace=("sales",), rows=(_table_row("orders"),)
+    )
+    recovered = workflow.list_tables(("sales",))
+
+    assert failed.failures[0].message == "SSO session expired"
+    assert [row.identifier for row in recovered.rows] == ["sales.orders"]
+    assert access.requested_table_namespaces == [("sales",), ("sales",)]
+
+
 def test_catalog_browser_workflow_caches_table_listing_until_ttl_expires(tmp_path):
     written_at = datetime(2026, 5, 21, 8, 30, tzinfo=timezone.utc)
     current_time = written_at
@@ -129,11 +224,15 @@ def test_catalog_browser_refresh_preserves_unrelated_cached_scopes(tmp_path):
     cache.write_table_listing(
         "analytics",
         ("finance",),
-        CatalogTableListing(namespace=("finance",), rows=(_table_row("invoices", "finance"),)),
+        CatalogTableListing(
+            namespace=("finance",), rows=(_table_row("invoices", "finance"),)
+        ),
     )
     workflow = CatalogBrowserWorkflow(
         catalog_access=FakeCatalogAccess(
-            tables=CatalogTableListing(namespace=("sales",), rows=(_table_row("orders"),))
+            tables=CatalogTableListing(
+                namespace=("sales",), rows=(_table_row("orders"),)
+            )
         ),
         cache=cache,
         cache_scope_key="analytics",
@@ -179,7 +278,9 @@ def test_catalog_browser_namespace_refresh_preserves_table_cache(tmp_path):
     workflow = CatalogBrowserWorkflow(
         catalog_access=FakeCatalogAccess(
             namespaces=CatalogNamespaceListing(
-                namespaces=(CatalogNamespace(name=("finance",), display_name="finance"),)
+                namespaces=(
+                    CatalogNamespace(name=("finance",), display_name="finance"),
+                )
             )
         ),
         cache=cache,
@@ -295,9 +396,11 @@ class FakeCatalogAccess:
     def __init__(self, namespaces=None, tables=None):
         self.namespaces = namespaces or CatalogNamespaceListing(namespaces=())
         self.tables = tables
+        self.namespace_calls = 0
         self.requested_table_namespaces = []
 
     def list_namespaces(self):
+        self.namespace_calls += 1
         return self.namespaces
 
     def list_tables(self, namespace):
