@@ -167,9 +167,12 @@ def _optional_source_value(
     override_key: str,
     environment_key: str,
 ) -> str | None:
-    raw_override = overrides.get(override_key)
-    if raw_override is not None:
-        return str(raw_override)
+    if override_key in overrides:
+        raw_override = overrides[override_key]
+        if raw_override is None:
+            return None
+        normalized = str(raw_override).strip()
+        return normalized or None
     return values.get(environment_key)
 
 

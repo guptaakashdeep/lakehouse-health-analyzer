@@ -49,6 +49,24 @@ def test_configuration_loads_glue_catalog_table_source_from_environment():
     )
 
 
+def test_ui_optional_source_overrides_can_clear_environment_values():
+    config = AnalyzerConfiguration.from_environment(
+        {
+            "LHA_TABLE_SOURCE_KIND": "glue_catalog_table",
+            "LHA_GLUE_CATALOG_NAME": "analytics",
+            "LHA_AWS_PROFILE": "dev",
+            "LHA_AWS_REGION": "us-east-1",
+        },
+        ui_overrides={"aws_profile": None, "aws_region": ""},
+    )
+
+    assert config.table_source == GlueCatalogTableSourceConfiguration(
+        catalog_name="analytics",
+        namespace=(),
+        table_name="__catalog_overview__",
+    )
+
+
 def test_configuration_loads_analysis_and_runtime_policies_from_environment():
     config = AnalyzerConfiguration.from_environment(
         {

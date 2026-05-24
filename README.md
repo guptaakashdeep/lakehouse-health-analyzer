@@ -59,14 +59,43 @@ flowchart TD
     O --> MD
 ```
 
-## `uv` workflow (supported path)
+## Development workflow
+
+Use `uv run` when working from a source checkout without installing the CLI:
 
 ```bash
 uv sync --extra dev
 uv run pytest
+uv run lh
 ```
 
-Run all project commands through `uv run`.
+## Install the CLI
+
+Install the project once to put the `lh` and `lakehouse-health-operator`
+commands on your `PATH`:
+
+```bash
+python -m pip install .
+```
+
+For editable local development:
+
+```bash
+python -m pip install -e .
+```
+
+Or install as an isolated user-level tool:
+
+```bash
+uv tool install --editable .
+# or: pipx install --editable .
+```
+
+After installation, launch the TUI directly:
+
+```bash
+lh
+```
 
 ## Runtime configuration
 
@@ -132,14 +161,20 @@ The current Streamlit catalog view is an overview table. Full catalog-table dril
 Run setup once to save reusable Glue catalog defaults:
 
 ```bash
-uv run lakehouse-health-operator setup
+lh setup
 ```
 
 The default operator command opens the interactive Textual TUI. `lh` is the
-short alias for the same entry point:
+short alias for `lakehouse-health-operator`:
 
 ```bash
-uv run lakehouse-health-operator
+lh
+lakehouse-health-operator
+```
+
+From a source checkout without installing, prefix commands with `uv run`:
+
+```bash
 uv run lh
 ```
 
@@ -158,9 +193,9 @@ table, refresh visible catalog/table data, and export the selected report.
 Generate non-interactive reports with the explicit `report` subcommand:
 
 ```bash
-uv run lakehouse-health-operator report sales.orders --format json
-uv run lakehouse-health-operator report sales.orders --format markdown
-uv run lh report sales.orders --format json
+lh report sales.orders --format json
+lh report sales.orders --format markdown
+lakehouse-health-operator report sales.orders --format json
 ```
 
 Interactive TUI behavior, layout, styling, and key bindings are captured in
@@ -198,11 +233,11 @@ JSON preserves the canonical report structure. Markdown is a readable summary wi
 path or output directory:
 
 ```bash
-uv run lakehouse-health-operator report sales.orders --format json
-uv run lakehouse-health-operator report sales.orders --format markdown
-uv run lakehouse-health-operator report sales.curated.orders --format json
-uv run lakehouse-health-operator report sales.orders --format json --output /tmp/sales-orders.json
-uv run lakehouse-health-operator report sales.orders --format json,markdown --output-dir /tmp/lha-exports
+lh report sales.orders --format json
+lh report sales.orders --format markdown
+lh report sales.curated.orders --format json
+lh report sales.orders --format json --output /tmp/sales-orders.json
+lh report sales.orders --format json,markdown --output-dir /tmp/lha-exports
 ```
 
 The final identifier segment is the table name; earlier segments make up the

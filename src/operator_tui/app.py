@@ -90,6 +90,7 @@ class OperatorCatalogBrowserApp(App[None]):
         height: auto;
         min-height: 3;
         margin: 1 1 0 1;
+        background: #101316;
     }
 
     #filter-input {
@@ -110,17 +111,16 @@ class OperatorCatalogBrowserApp(App[None]):
         width: auto;
         min-width: 8;
         margin-left: 1;
-        padding: 0 0;
+        padding: 0 1;
         content-align: center middle;
-        background: #202a30;
-        border: round #2c3940;
-        color: #e7eff2;
-        text-style: bold;
+        background: #101316;
+        border: none;
+        color: #aab8bd;
     }
 
     .toolbar-button.active {
-        border: round #42d9d1;
         color: #42d9d1;
+        text-style: bold underline;
     }
 
     .hidden {
@@ -204,7 +204,7 @@ class OperatorCatalogBrowserApp(App[None]):
     }
 
     ListItem {
-        height: 2;
+        height: 1;
         background: #171d22;
         color: #aab8bd;
     }
@@ -226,24 +226,28 @@ class OperatorCatalogBrowserApp(App[None]):
     }
 
     .table-row {
-        height: 2;
+        height: 1;
     }
 
     .namespace-row {
-        height: 2;
+        height: 1;
     }
 
     .selection-rail {
         width: 1;
-        height: 2;
-        color: #26333a;
+        height: 1;
+        color: #171d22;
         content-align: center middle;
     }
 
     .namespace-name {
         width: 1fr;
+        height: 1;
         padding: 0 1;
         content-align: left middle;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        text-wrap: nowrap;
     }
 
     .row-meta {
@@ -257,12 +261,16 @@ class OperatorCatalogBrowserApp(App[None]):
 
     .table-name {
         width: 1fr;
+        height: 1;
         padding: 0 1;
         content-align: left middle;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        text-wrap: nowrap;
     }
 
     .table-format {
-        width: 12;
+        width: 9;
         padding: 0 1;
         content-align: right middle;
         text-align: right;
@@ -312,10 +320,19 @@ class OperatorCatalogBrowserApp(App[None]):
     }
 
     .table-cache {
-        width: 9;
+        width: 7;
         padding: 0 1;
         content-align: right middle;
         text-align: right;
+    }
+
+    .empty-state {
+        height: 1fr;
+        padding: 1 2;
+        content-align: center middle;
+        text-align: center;
+        color: #74868e;
+        background: #171d22;
     }
 
     #detail-scroll {
@@ -377,6 +394,10 @@ class OperatorCatalogBrowserApp(App[None]):
         height: 7;
     }
 
+    #workspace.layout-wide #namespace-panel {
+        height: 30%;
+    }
+
     #workspace.layout-compact #detail-column {
         height: 1fr;
         min-height: 5;
@@ -410,6 +431,7 @@ class OperatorCatalogBrowserApp(App[None]):
         Binding("2", "export_markdown", "Markdown", show=False),
         Binding("3", "export_both", "Both", show=False),
         Binding("s", "setup", "Setup"),
+        Binding("?", "help", "Help"),
     ]
 
     def __init__(
@@ -442,6 +464,8 @@ class OperatorCatalogBrowserApp(App[None]):
         self.selected_report_result: TableAnalysisResult | None = None
         self.export_prompt_active = False
         self.freshness = "loading"
+        self.loading_namespaces = False
+        self.loading_tables = False
         self.analysis_calls = 0
         self.layout_state: LayoutState = layout_state_for_size(80, 24)
 
@@ -453,18 +477,18 @@ class OperatorCatalogBrowserApp(App[None]):
                 id="filter-input",
             )
             yield Static(
-                "Filter Databases",
+                "/ Filter Databases",
                 id="filter-databases-action",
                 classes="toolbar-button active",
             )
             yield Static(
-                "Filter Tables",
+                "/ Filter Tables",
                 id="filter-tables-action",
                 classes="toolbar-button",
             )
-            yield Static("Refresh", id="refresh-action", classes="toolbar-button")
-            yield Static("Export", id="export-action", classes="toolbar-button")
-            yield Static("Setup", id="setup-action", classes="toolbar-button")
+            yield Static("r Refresh", id="refresh-action", classes="toolbar-button")
+            yield Static("e Export", id="export-action", classes="toolbar-button")
+            yield Static("s Setup", id="setup-action", classes="toolbar-button")
         with Container(id="workspace"):
             with Vertical(id="catalog-column"):
                 with Vertical(id="namespace-panel", classes="browser-panel active"):
@@ -474,11 +498,21 @@ class OperatorCatalogBrowserApp(App[None]):
                         )
                         yield Static("", classes="panel-count", id="namespace-count")
                     yield ListView(id="namespace-list")
+                    yield Static(
+                        "Loading databases...",
+                        id="namespace-empty",
+                        classes="empty-state",
+                    )
                 with Vertical(id="table-panel", classes="browser-panel"):
                     with Horizontal(classes="panel-head"):
                         yield Static("TABLES", classes="panel-title", id="table-title")
                         yield Static("", classes="panel-count", id="table-count")
                     yield ListView(id="table-list")
+                    yield Static(
+                        "Select a database to load tables.",
+                        id="table-empty",
+                        classes="empty-state",
+                    )
             with Vertical(id="detail-column", classes="browser-panel"):
                 with Horizontal(classes="panel-head"):
                     yield Static("DETAILS", classes="panel-title", id="detail-title")
@@ -533,6 +567,7 @@ class OperatorCatalogBrowserApp(App[None]):
 
     async def _load_namespaces(self, *, refresh: bool = False) -> None:
         self.freshness = "loading"
+        self.loading_namespaces = True
         self._refresh_chrome()
         try:
             if self.namespace_workflow is None:
@@ -576,6 +611,7 @@ class OperatorCatalogBrowserApp(App[None]):
                     "Unable to list namespaces", str(exc), status="critical"
                 )
             )
+        self.loading_namespaces = False
         self._refresh_chrome()
 
     async def _load_tables_for_selected_namespace(
@@ -585,6 +621,8 @@ class OperatorCatalogBrowserApp(App[None]):
             return
         namespace_label = ".".join(self.selected_namespace)
         self.freshness = "loading"
+        self.loading_tables = True
+        self._refresh_empty_states()
         self.query_one("#detail-panel", Static).update(
             render_detail_state(
                 "Loading tables",
@@ -641,6 +679,7 @@ class OperatorCatalogBrowserApp(App[None]):
                     status="critical",
                 )
             )
+        self.loading_tables = False
         self._refresh_chrome()
 
     async def _render_tables(self) -> None:
@@ -926,6 +965,22 @@ class OperatorCatalogBrowserApp(App[None]):
             )
         )
 
+    def action_help(self) -> None:
+        self.query_one("#detail-panel", Static).update(
+            render_detail_state(
+                "Keyboard help",
+                (
+                    "↑/↓ or j/k move within the active panel.",
+                    "← focuses databases; → focuses tables.",
+                    "Enter loads tables or analyzes the highlighted table.",
+                    "/ filters the active panel; Esc clears filters or export prompt.",
+                    "r refreshes visible data; e exports an analyzed report.",
+                    "q quits.",
+                ),
+                status="info",
+            )
+        )
+
     def _active_list(self) -> ListView:
         if self.active_panel == "tables":
             return self.query_one("#table-list", ListView)
@@ -964,6 +1019,7 @@ class OperatorCatalogBrowserApp(App[None]):
             f"{len(self._current_tables())} shown"
         )
         self.query_one("#detail-count", Static).update(self._detail_count_label())
+        self._refresh_empty_states()
 
         self.query_one("#operator-footer", Static).update(self._footer_text())
         for panel_id, panel_name in (
@@ -978,6 +1034,40 @@ class OperatorCatalogBrowserApp(App[None]):
         self.query_one("#filter-tables-action").set_class(
             self.active_panel == "tables", "active"
         )
+
+    def _refresh_empty_states(self) -> None:
+        namespaces = self._current_namespaces()
+        namespace_list = self.query_one("#namespace-list", ListView)
+        namespace_empty = self.query_one("#namespace-empty", Static)
+        namespace_empty.update(self._namespace_empty_message(namespaces))
+        namespace_list.set_class(not namespaces, "hidden")
+        namespace_empty.set_class(bool(namespaces), "hidden")
+
+        tables = self._current_tables()
+        table_list = self.query_one("#table-list", ListView)
+        table_empty = self.query_one("#table-empty", Static)
+        table_empty.update(self._table_empty_message(tables))
+        table_list.set_class(not tables, "hidden")
+        table_empty.set_class(bool(tables), "hidden")
+
+    def _namespace_empty_message(self, namespaces: tuple[CatalogNamespace, ...]) -> str:
+        if self.loading_namespaces:
+            return "Loading databases..."
+        if self.namespace_filter and not namespaces:
+            return f"No databases match '{self.namespace_filter}'."
+        return "No databases found."
+
+    def _table_empty_message(self, tables: tuple[CatalogTable, ...]) -> str:
+        if self.selected_namespace is None:
+            return "Select a database to load tables."
+        namespace = ".".join(self.selected_namespace)
+        if self.loading_tables:
+            return f"Loading tables for {namespace}..."
+        if self.table_filter and not tables:
+            return f"No tables match '{self.table_filter}'."
+        if self.selected_namespace in self.tables_by_namespace:
+            return f"No tables found in {namespace}."
+        return "Press Enter on a database to load tables."
 
     def _detail_count_label(self) -> str:
         if self.selected_report_result is not None:
@@ -1012,13 +1102,17 @@ class OperatorCatalogBrowserApp(App[None]):
             return "1 JSON | 2 Markdown | 3 Both | Esc Cancel | q Quit"
         if self.active_panel == "namespaces":
             if self.layout_state.compact_chrome:
-                return "Enter Load | / Filter | r Refresh | s Setup | q Quit"
+                return "Enter Load | ↑/↓ Move | → Tables | / Filter | ? Help | q Quit"
             return (
-                "Enter Load tables | / Filter databases | r Refresh | s Setup | q Quit"
+                "Enter Load tables | ↑/↓ Move | → Tables | / Filter databases | "
+                "r Refresh | s Setup | ? Help | q Quit"
             )
         if self.layout_state.compact_chrome:
-            return "Enter Analyze | / Filter | r Refresh | e Export | q Quit"
-        return "Enter Analyze | / Filter tables | r Refresh | e Export | q Quit"
+            return "Enter Analyze | ↑/↓ Move | ← DBs | / Filter | ? Help | q Quit"
+        return (
+            "Enter Analyze | ↑/↓ Move | ← Databases | / Filter tables | "
+            "r Refresh | e Export | ? Help | q Quit"
+        )
 
 
 def _panel_label(panel: str) -> str:
@@ -1250,7 +1344,12 @@ def _is_unsupported_error(exc: Exception) -> bool:
     if NoSuchIcebergTableError and isinstance(exc, NoSuchIcebergTableError):
         return True
     message = str(exc).lower()
-    return "not an iceberg table" in message or "not a valid iceberg table" in message
+    return (
+        "not an iceberg table" in message
+        or "not a valid iceberg table" in message
+        or "property table_type missing" in message
+        or "could not determine type" in message
+    )
 
 
 def _unsupported_error_message(exc: Exception) -> str:

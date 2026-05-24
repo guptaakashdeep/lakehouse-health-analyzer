@@ -6,6 +6,9 @@ build-backend = "hatchling.build"
 name = "lakehouse-health-analyzer"
 version = "0.1.0"
 description = "A tool for analyzing lakehouse table health"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Akashdeep Gupta" }]
 requires-python = ">=3.10"
 dependencies = [
     "boto3>=1.26.0",

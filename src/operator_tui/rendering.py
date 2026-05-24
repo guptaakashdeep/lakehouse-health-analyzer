@@ -4,7 +4,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from rich.console import RenderableType
+from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
@@ -104,29 +104,19 @@ def render_report_detail(
         for section in detail_view.sections
         if section.key not in {"recommendations", "warnings"}
     )
-    body = Text()
-    body.append(report.table_name, style=f"bold {TEXT}")
-    body.append("  ")
-    body.append(_badge("ICEBERG"))
-    body.append("  ")
-    body.append(_badge(cache_status))
-    body.append("\n")
-    body.append(
-        f"{report.table_source.kind} {report.table_source.location}",
-        style=TEXT_SOFT,
-    )
-    body.append("\n")
-    body.append(
-        f"{recommendation_count} recommendations",
-        style=CYAN if recommendation_count else MUTED,
-    )
-    body.append(" | ", style=MUTED)
-    body.append(f"{warning_count} warnings", style=AMBER if warning_count else MUTED)
-    body.append(" | ", style=MUTED)
-    body.append(f"{metric_count} metrics", style=GREEN if metric_count else MUTED)
-    for section in detail_view.sections:
-        _append_section(body, section)
-    return body
+    panels: list[RenderableType] = [
+        _summary_panel(
+            report,
+            cache_status=cache_status,
+            recommendation_count=recommendation_count,
+            warning_count=warning_count,
+            metric_count=metric_count,
+        )
+    ]
+    panels.extend(_section_panel(section) for section in detail_view.sections)
+    group = Group(*panels)
+    group.spans = _panel_text_spans(panels)  # type: ignore[attr-defined]
+    return group
 
 
 def render_detail_state(
@@ -175,13 +165,78 @@ def render_export_failure(message: str) -> RenderableType:
     return render_detail_state("Export failed", message, status="critical")
 
 
+def _panel_text_spans(panels: Sequence[RenderableType]) -> tuple[object, ...]:
+    spans = []
+    for panel in panels:
+        renderable = getattr(panel, "renderable", None)
+        if isinstance(renderable, Text):
+            spans.extend(renderable.spans)
+    return tuple(spans)
+
+
+def _summary_panel(
+    report: TableHealthReport,
+    *,
+    cache_status: str,
+    recommendation_count: int,
+    warning_count: int,
+    metric_count: int,
+) -> Panel:
+    body = Text()
+    body.append(report.table_name, style=f"bold {TEXT}")
+    body.append("  ")
+    body.append(_badge("ICEBERG"))
+    body.append("  ")
+    body.append(_badge(cache_status))
+    body.append("\n")
+    body.append(
+        f"{report.table_source.kind} {report.table_source.location}",
+        style=TEXT_SOFT,
+    )
+    body.append("\n")
+    body.append(
+        f"{recommendation_count} recommendations",
+        style=CYAN if recommendation_count else MUTED,
+    )
+    body.append(" | ", style=MUTED)
+    body.append(f"{warning_count} warnings", style=AMBER if warning_count else MUTED)
+    body.append(" | ", style=MUTED)
+    body.append(f"{metric_count} metrics", style=GREEN if metric_count else MUTED)
+    return _framed(
+        body,
+        title="TABLE SUMMARY",
+        border_style=CYAN,
+        padding=(0, 1),
+    )
+
+
+def _section_panel(section: TableDetailSection) -> Panel:
+    section_color = _section_color(section.key)
+    body = Text()
+    _append_section_content(body, section, section_color=section_color)
+    return _framed(
+        body,
+        title=f"{section.title.upper()}  {_count_label(section.items)}",
+        border_style=section_color,
+        padding=(0, 1),
+    )
+
+
 def _append_section(body: Text, section: TableDetailSection) -> None:
     section_color = _section_color(section.key)
     body.append("\n\n")
     body.append(section.title.upper(), style=f"bold {section_color}")
     body.append(f"  {_count_label(section.items)}", style=MUTED)
     body.append("\n")
+    _append_section_content(body, section, section_color=section_color)
 
+
+def _append_section_content(
+    body: Text,
+    section: TableDetailSection,
+    *,
+    section_color: str,
+) -> None:
     if section.key == "recommendations":
         _append_recommendations(body, section.items)
         return
@@ -248,15 +303,30 @@ def _append_metrics(
     if not items:
         body.append("No data available.", style=TEXT_SOFT)
         return
-    label_width = min(
-        max(len(str(item.primary.get("label", item.label))) for item in items),
-        36,
-    )
-    for item in items:
-        label = _ellipsize(str(item.primary.get("label", item.label)), label_width)
+    labels = tuple(_metric_label(item, items) for item in items)
+    label_width = min(max(len(label) for label in labels), 36)
+    for item, raw_label in zip(items, labels):
+        label = _ellipsize(raw_label, label_width)
         body.append(f"  {label:<{label_width}}  ", style=f"bold {section_color}")
         body.append(_primary_value(item), style=f"bold {_metric_value_color(item)}")
         body.append("\n")
+
+
+def _metric_label(item: TableDetailItem, items: tuple[TableDetailItem, ...]) -> str:
+    label = str(item.primary.get("label", item.label))
+    if (
+        sum(
+            1
+            for other in items
+            if str(other.primary.get("label", other.label)) == label
+        )
+        == 1
+    ):
+        return label
+    unit = item.primary.get("unit")
+    if unit:
+        return f"{label} ({unit})"
+    return f"{label} (Readable)"
 
 
 def _primary_value(item: TableDetailItem) -> str:
@@ -337,9 +407,12 @@ def _framed(
     *,
     border_style: str = LINE,
     padding: tuple[int, int] = (0, 0),
+    title: str | None = None,
 ) -> Panel:
     return Panel(
         renderable,
+        title=title,
+        title_align="left",
         border_style=border_style,
         style=f"on {PANEL}",
         padding=padding,
