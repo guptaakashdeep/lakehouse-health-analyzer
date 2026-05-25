@@ -3,7 +3,16 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Mapping
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:  # pragma: no cover - optional dependency not installed
+        tomllib = None  # type: ignore[assignment]
 
 
 @dataclass(frozen=True)
@@ -15,8 +24,8 @@ class MetadataFileSourceConfiguration:
 @dataclass(frozen=True)
 class GlueCatalogTableSourceConfiguration:
     catalog_name: str
-    namespace: tuple[str, ...]
-    table_name: str
+    namespace: tuple[str, ...] = ()
+    table_name: str = "__catalog_overview__"
     aws_profile: str | None = None
     region: str | None = None
     kind: str = "glue_catalog_table"
@@ -55,7 +64,10 @@ class AnalyzerConfiguration:
         environ: Mapping[str, str] | None = None,
         ui_overrides: Mapping[str, object] | None = None,
     ) -> "AnalyzerConfiguration":
-        values = os.environ if environ is None else environ
+        values = _configuration_values(
+            os.environ if environ is None else environ,
+            load_default_file=environ is None,
+        )
         overrides = {} if ui_overrides is None else ui_overrides
         return cls(
             table_source=_table_source_value(values, overrides),
@@ -118,10 +130,11 @@ def _table_source_value(
             catalog_name=_required_source_value(
                 values, overrides, "glue_catalog_name", "LHA_GLUE_CATALOG_NAME"
             ),
-            namespace=_namespace_value(values, overrides),
-            table_name=_required_source_value(
+            namespace=_optional_namespace_value(values, overrides),
+            table_name=_optional_source_value(
                 values, overrides, "glue_table_name", "LHA_GLUE_TABLE_NAME"
-            ),
+            )
+            or "__catalog_overview__",
             aws_profile=_optional_source_value(
                 values, overrides, "aws_profile", "LHA_AWS_PROFILE"
             ),
@@ -154,9 +167,12 @@ def _optional_source_value(
     override_key: str,
     environment_key: str,
 ) -> str | None:
-    raw_override = overrides.get(override_key)
-    if raw_override is not None:
-        return str(raw_override)
+    if override_key in overrides:
+        raw_override = overrides[override_key]
+        if raw_override is None:
+            return None
+        normalized = str(raw_override).strip()
+        return normalized or None
     return values.get(environment_key)
 
 
@@ -169,6 +185,20 @@ def _namespace_value(
             return _namespace_parts(raw_override)
         return tuple(str(part) for part in raw_override)
     return _namespace_parts(values["LHA_GLUE_NAMESPACE"])
+
+
+def _optional_namespace_value(
+    values: Mapping[str, str], overrides: Mapping[str, object]
+) -> tuple[str, ...]:
+    raw_override = overrides.get("glue_namespace")
+    if raw_override is not None:
+        if isinstance(raw_override, str):
+            return _namespace_parts(raw_override)
+        return tuple(str(part) for part in raw_override)
+    raw_value = values.get("LHA_GLUE_NAMESPACE")
+    if raw_value is None:
+        return ()
+    return _namespace_parts(raw_value)
 
 
 def _namespace_parts(raw_value: str) -> tuple[str, ...]:
@@ -245,3 +275,90 @@ def _override_optional_string(
     if raw_value is None:
         return fallback
     return str(raw_value)
+
+
+def _configuration_values(
+    values: Mapping[str, str], *, load_default_file: bool
+) -> Mapping[str, str]:
+    config_path = values.get("LHA_CONFIG_PATH")
+    if config_path is None and load_default_file:
+        config_path = str(_default_setup_config_path(values))
+
+    setup_file_values: Mapping[str, str] = {}
+    if config_path:
+        setup_file_values = _load_setup_file_values(Path(config_path))
+
+    if not setup_file_values:
+        return values
+    return {**setup_file_values, **values}
+
+
+def _default_setup_config_path(values: Mapping[str, str]) -> Path:
+    xdg_config_home = values.get("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        config_home = Path(xdg_config_home)
+    else:
+        home = values.get("HOME")
+        config_home = Path(home) / ".config" if home else Path.home() / ".config"
+    return config_home / "lakehouse-health-analyzer" / "config.toml"
+
+
+def _load_setup_file_values(path: Path) -> Mapping[str, str]:
+    if tomllib is None or not path.exists():
+        return {}
+    payload = tomllib.loads(path.read_text())
+    if not isinstance(payload, dict):
+        return {}
+
+    values: dict[str, str] = {}
+    table_source = payload.get("table_source")
+    if isinstance(table_source, dict):
+        _put_string(values, "LHA_TABLE_SOURCE_KIND", table_source.get("table_source_kind"))
+        _put_string(values, "LHA_METADATA_LOCATION", table_source.get("metadata_location"))
+        _put_string(values, "LHA_GLUE_CATALOG_NAME", table_source.get("glue_catalog_name"))
+        _put_string(values, "LHA_GLUE_NAMESPACE", table_source.get("glue_namespace"))
+        _put_string(values, "LHA_GLUE_TABLE_NAME", table_source.get("glue_table_name"))
+        _put_string(values, "LHA_AWS_PROFILE", table_source.get("aws_profile"))
+        _put_string(values, "LHA_AWS_REGION", table_source.get("aws_region"))
+
+    analysis = payload.get("analysis")
+    if isinstance(analysis, dict):
+        _put_int(values, "LHA_SNAPSHOT_RETENTION_DAYS", analysis.get("snapshot_retention_days"))
+        thresholds = analysis.get("recommendation_thresholds")
+        if isinstance(thresholds, dict):
+            values["LHA_RECOMMENDATION_THRESHOLDS"] = json.dumps(thresholds)
+        _put_int(values, "LHA_HISTORY_DEPTH", analysis.get("history_depth"))
+
+    runtime = payload.get("runtime")
+    if isinstance(runtime, dict):
+        _put_int(values, "LHA_CACHE_TTL_SECONDS", runtime.get("cache_ttl_seconds"))
+        _put_int(values, "LHA_TIMEOUT_SECONDS", runtime.get("timeout_seconds"))
+        _put_int(values, "LHA_MAX_CONCURRENCY", runtime.get("max_concurrency"))
+
+    output = payload.get("output")
+    if isinstance(output, dict):
+        formats = output.get("export_formats")
+        if isinstance(formats, (list, tuple)):
+            normalized = tuple(
+                str(value).strip().lower() for value in formats if str(value).strip()
+            )
+            if normalized:
+                values["LHA_EXPORT_FORMATS"] = ",".join(normalized)
+        _put_string(values, "LHA_EXPORT_DIRECTORY", output.get("export_directory"))
+
+    return values
+
+
+def _put_string(values: dict[str, str], key: str, raw_value: object) -> None:
+    if not isinstance(raw_value, str):
+        return
+    normalized = raw_value.strip()
+    if not normalized:
+        return
+    values[key] = normalized
+
+
+def _put_int(values: dict[str, str], key: str, raw_value: object) -> None:
+    if not isinstance(raw_value, int):
+        return
+    values[key] = str(raw_value)

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping, Optional, Tuple
+from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
 
 from pyiceberg.catalog import load_catalog
 
@@ -67,7 +67,7 @@ class IcebergTableFormatAdapter:
 
     def analyze_table(self, table: Any, table_source: TableSource) -> TableHealthReport:
         table_name = _table_name(table)
-        file_rows = tuple(_rows_from_table(table.inspect.files()))
+        file_rows = tuple(_rows_from_inspection(table.inspect.files))
 
         data_file_count = sum(1 for row in file_rows if _content_code(row) == 0)
         position_delete_file_count = sum(
@@ -399,6 +399,17 @@ def _table_name(table: Any) -> str:
     return ".".join(str(part) for part in name)
 
 
+def _rows_from_inspection(
+    inspect_call: Callable[[], Any],
+) -> Iterable[Mapping[str, Any]]:
+    try:
+        return _rows_from_table(inspect_call())
+    except Exception as exc:
+        if _is_no_snapshot_error(exc):
+            return ()
+        raise
+
+
 def _rows_from_table(files: Any) -> Iterable[Mapping[str, Any]]:
     if hasattr(files, "to_pylist"):
         return files.to_pylist()
@@ -414,13 +425,23 @@ def _content_code(row: Mapping[str, Any]) -> int:
     return int(content)
 
 
+def _is_no_snapshot_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "snapshot" in message and (
+        "doesn't have any" in message
+        or "does not have any" in message
+        or "has no snapshot" in message
+        or "no snapshot" in message
+    )
+
+
 def _partition_metrics(table: Any) -> Tuple[PartitionHealthMetric, ...]:
     if not hasattr(table.inspect, "partitions"):
         return ()
 
     return tuple(
         _partition_metric_from_row(row)
-        for row in _rows_from_table(table.inspect.partitions())
+        for row in _rows_from_inspection(table.inspect.partitions)
     )
 
 
@@ -453,7 +474,21 @@ def _snapshot_metrics(
             "metrics are unknown.",
         )
 
-    snapshot_rows = tuple(_rows_from_table(table.inspect.snapshots()))
+    try:
+        snapshot_rows = tuple(_rows_from_table(table.inspect.snapshots()))
+    except Exception as exc:
+        if _is_no_snapshot_error(exc):
+            return (
+                _snapshot_health_metrics(
+                    valid_snapshot_count=0,
+                    oldest_snapshot_age_days=None,
+                    latest_snapshot_age_days=None,
+                    snapshot_retention_days=snapshot_retention_days,
+                    expirable_snapshot_candidate_count=0,
+                ),
+                (),
+            )
+        raise
     if any(_snapshot_id(row) is None for row in snapshot_rows):
         return _unknown_snapshot_metrics(
             snapshot_retention_days,
@@ -791,7 +826,12 @@ def _snapshot_committed_at(row: Mapping[str, Any]) -> Optional[datetime]:
 def _current_snapshot_id(table: Any) -> Any:
     if not hasattr(table, "current_snapshot"):
         return None
-    current_snapshot = table.current_snapshot()
+    try:
+        current_snapshot = table.current_snapshot()
+    except Exception as exc:
+        if _is_no_snapshot_error(exc):
+            return None
+        raise
     if isinstance(current_snapshot, Mapping):
         return _snapshot_id(current_snapshot)
     snapshot_id = getattr(current_snapshot, "snapshot_id", None)
@@ -1161,7 +1201,7 @@ def _sum_all_known(values: Iterable[Optional[int]]) -> Optional[int]:
             return None
         total += int(value)
         found = True
-    return total if found else None
+    return total if found else 0
 
 
 def _min_all_known(values: Iterable[Optional[int]]) -> Optional[int]:

@@ -37,3 +37,5 @@ ENV/
 *.log 
 
 *.ipynb
+docs/issues/
+docs/prd/

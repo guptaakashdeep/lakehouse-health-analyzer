@@ -49,6 +49,24 @@ def test_configuration_loads_glue_catalog_table_source_from_environment():
     )
 
 
+def test_ui_optional_source_overrides_can_clear_environment_values():
+    config = AnalyzerConfiguration.from_environment(
+        {
+            "LHA_TABLE_SOURCE_KIND": "glue_catalog_table",
+            "LHA_GLUE_CATALOG_NAME": "analytics",
+            "LHA_AWS_PROFILE": "dev",
+            "LHA_AWS_REGION": "us-east-1",
+        },
+        ui_overrides={"aws_profile": None, "aws_region": ""},
+    )
+
+    assert config.table_source == GlueCatalogTableSourceConfiguration(
+        catalog_name="analytics",
+        namespace=(),
+        table_name="__catalog_overview__",
+    )
+
+
 def test_configuration_loads_analysis_and_runtime_policies_from_environment():
     config = AnalyzerConfiguration.from_environment(
         {
@@ -127,3 +145,86 @@ def test_configuration_loads_output_policy_from_environment():
 
     assert config.output.export_formats == ("json", "markdown")
     assert config.output.export_directory == "/tmp/report-exports"
+
+
+def test_configuration_uses_setup_file_before_environment_and_ui_overrides(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "[table_source]",
+                'table_source_kind = "metadata_file"',
+                'metadata_location = "/tmp/from-config.metadata.json"',
+                "",
+                "[analysis]",
+                "snapshot_retention_days = 14",
+                "",
+                "[runtime]",
+                "timeout_seconds = 11",
+                "",
+            )
+        )
+    )
+
+    config = AnalyzerConfiguration.from_environment(
+        {
+            "LHA_CONFIG_PATH": str(config_path),
+            "LHA_METADATA_LOCATION": "/tmp/from-environment.metadata.json",
+            "LHA_TIMEOUT_SECONDS": "7",
+        },
+        ui_overrides={"timeout_seconds": 3},
+    )
+
+    assert config.table_source.location == "/tmp/from-environment.metadata.json"
+    assert config.analysis.snapshot_retention_days == 14
+    assert config.runtime.timeout_seconds == 3
+
+
+def test_configuration_loads_metadata_location_from_setup_file_when_env_missing(
+    tmp_path,
+):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "[table_source]",
+                'table_source_kind = "metadata_file"',
+                'metadata_location = "/tmp/from-config.metadata.json"',
+                "",
+            )
+        )
+    )
+
+    config = AnalyzerConfiguration.from_environment(
+        {"LHA_CONFIG_PATH": str(config_path)}
+    )
+
+    assert config.table_source.location == "/tmp/from-config.metadata.json"
+
+
+def test_configuration_loads_glue_setup_file_without_default_namespace_or_table(
+    tmp_path,
+):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "[table_source]",
+                'table_source_kind = "glue_catalog_table"',
+                'glue_catalog_name = "glue"',
+                'aws_profile = "dev"',
+                'aws_region = "us-east-1"',
+                "",
+            )
+        )
+    )
+
+    config = AnalyzerConfiguration.from_environment({"LHA_CONFIG_PATH": str(config_path)})
+
+    assert config.table_source == GlueCatalogTableSourceConfiguration(
+        catalog_name="glue",
+        namespace=(),
+        table_name="__catalog_overview__",
+        aws_profile="dev",
+        region="us-east-1",
+    )

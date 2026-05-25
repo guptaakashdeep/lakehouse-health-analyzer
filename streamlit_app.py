@@ -29,7 +29,10 @@ def get_table_metrics(
         # Initialize analyzer based on mode
         if use_metadata_file:
             config = AnalyzerConfiguration.from_environment(
-                ui_overrides={"metadata_location": metadata_location}
+                ui_overrides={
+                    "table_source_kind": "metadata_file",
+                    "metadata_location": metadata_location,
+                }
             )
             return analyze_iceberg_metadata_file(config)
         else:

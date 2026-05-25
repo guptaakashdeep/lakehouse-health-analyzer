@@ -2,19 +2,22 @@
 
 Analyze Apache Iceberg table metadata through one canonical `TableHealthReport` model shared by Streamlit, terminal workflows, and exports.
 
-## Demo
-
-![Lakehouse Health Analyzer Demo](docs/resources/Lakehouse-analyzer.gif)
+Architecture decisions live in [docs/adr](docs/adr), the current component map
+lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and operator TUI
+modernization notes live in
+[docs/operator-tui-modernization.md](docs/operator-tui-modernization.md).
 
 ## Scope in this version
 
 - Table format: Apache Iceberg
 - Table sources:
   - Metadata file source (`metadata.json` path)
-  - AWS Glue catalog table source (`pyiceberg` Glue catalog loading)
+  - AWS Glue catalog table source (Boto3 for lightweight browsing, PyIceberg
+    for explicit table analysis)
 - Interfaces:
   - Streamlit dashboard (`streamlit_app.py`)
-  - Operator terminal workflow (`lakehouse-health-operator`)
+  - Operator Textual TUI (`lh` / `lakehouse-health-operator`)
+  - Non-interactive report command (`lh report`)
 - Outputs:
   - JSON structured report exports
   - Markdown summary report exports
@@ -31,52 +34,85 @@ Out of scope for this version:
 
 ## Architecture (current implementation)
 
-```mermaid
-flowchart TD
-    M["Metadata File<br/>metadata.json path"]
-    G["AWS Glue Catalog<br/>PyIceberg table loading"]
-    C["AnalyzerConfiguration.from_environment<br/>centralized runtime and config policy"]
-    A["Analysis Core<br/>canonical TableHealthReport"]
-    D["DuckDB Cache<br/>catalog overview cache"]
-    S["Streamlit Dashboard<br/>overview table and metadata-file full report"]
-    O["Operator CLI<br/>lakehouse-health-operator --inspect"]
-    J["JSON Export"]
-    MD["Markdown Export"]
+The calculation layer is `analysis.iceberg`, and the shared report shape is
+`analysis.report.TableHealthReport`. UI-neutral workflows in `src/workflows/`
+orchestrate catalog browsing, selected-table analysis, setup, and report
+exports. Interface layers render those shared workflows through the Textual TUI,
+Streamlit, and JSON/Markdown exports.
 
-    M --> C
-    G --> C
-    C --> A
-    A --> D
-    A --> S
-    D --> S
-    A --> O
-    D --> O
-    O --> J
-    O --> MD
-```
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current Mermaid component map.
 
-## `uv` workflow (supported path)
+## Development workflow
+
+Use `uv run` when working from a source checkout without installing the CLI:
 
 ```bash
 uv sync --extra dev
 uv run pytest
+uv run lh
 ```
 
-Run all project commands through `uv run`.
+## Install the CLI
+
+Install the project once to put the `lh` and `lakehouse-health-operator`
+commands on your `PATH`:
+
+```bash
+python -m pip install .
+```
+
+For editable local development:
+
+```bash
+python -m pip install -e .
+```
+
+Or install as an isolated user-level tool:
+
+```bash
+uv tool install --editable .
+# or: pipx install --editable .
+```
+
+After installation, launch the TUI directly:
+
+```bash
+lh
+```
 
 ## Runtime configuration
 
 Configuration is loaded by `AnalyzerConfiguration.from_environment()`.
 
+The project uses **catalog namespace** as the canonical term for the
+catalog-scoped grouping that contains tables. In AWS Glue, this is the Glue
+database, so Glue-facing UI may label the same value as "Database" for
+readability.
+
+The setup command saves reusable defaults to
+`${XDG_CONFIG_HOME:-~/.config}/lakehouse-health-analyzer/config.toml`.
+Configuration precedence is:
+
+1. Built-in defaults
+2. Setup config file
+3. Environment variables
+4. CLI flags or UI overrides
+
+Detailed setup behavior is captured in
+[docs/operator-tui-modernization.md](docs/operator-tui-modernization.md).
+
 Required for metadata-file analysis:
 
 - `LHA_METADATA_LOCATION`
 
-Required for Glue catalog-table analysis:
+Required for Glue catalog browsing and `lh report`:
 
 - `LHA_TABLE_SOURCE_KIND=glue_catalog_table`
 - `LHA_GLUE_CATALOG_NAME`
-- `LHA_GLUE_NAMESPACE` (dot-separated for operator/table analysis; Streamlit catalog overview currently supports a single namespace component)
+
+Optional for direct single-table analysis paths:
+
+- `LHA_GLUE_NAMESPACE` (the Glue database; dot-separated for nested namespaces)
 - `LHA_GLUE_TABLE_NAME`
 
 Optional policy and runtime settings:
@@ -106,51 +142,73 @@ In the UI you can:
 
 The current Streamlit catalog view is an overview table. Full catalog-table drilldown is tracked separately from this version's completed scope.
 
-## Run operator workflow
+## Run Operator Workflow
 
-Example environment for Glue catalog workflow:
+Run setup once to save reusable Glue catalog defaults:
+
+```bash
+lh setup
+```
+
+The default operator command opens the interactive Textual TUI. `lh` is the
+short alias for `lakehouse-health-operator`:
+
+```bash
+lh
+lakehouse-health-operator
+```
+
+From a source checkout without installing, prefix commands with `uv run`:
+
+```bash
+uv run lh
+```
+
+Example environment for Glue catalog workflow without running setup:
 
 ```bash
 export LHA_TABLE_SOURCE_KIND=glue_catalog_table
 export LHA_GLUE_CATALOG_NAME=analytics
-export LHA_GLUE_NAMESPACE=sales
-export LHA_GLUE_TABLE_NAME=orders
+export LHA_AWS_PROFILE=dev        # optional
+export LHA_AWS_REGION=us-east-1   # optional when your AWS config supplies it
 ```
 
-List catalog overview:
+In the TUI you can browse catalog namespaces, load tables, analyze a selected
+table in the background, continue navigating while analysis runs, refresh visible
+catalog/table data, and export the selected report. Empty Iceberg tables with no
+snapshots are shown as `NO DATA`; genuine analysis failures are shown as `ERROR`.
+
+Generate non-interactive reports with the explicit `report` subcommand:
 
 ```bash
-uv run lakehouse-health-operator
+lh report sales.orders --format json
+lh report sales.orders --format markdown
+lakehouse-health-operator report sales.orders --format json
 ```
 
-Inspect a selected table:
+Interactive TUI behavior, layout, styling, and key bindings are captured in
+[docs/operator-tui-modernization.md](docs/operator-tui-modernization.md).
 
-```bash
-uv run lakehouse-health-operator --inspect sales.orders
-```
-
-Force refresh or bypass cache:
-
-```bash
-uv run lakehouse-health-operator --refresh
-uv run lakehouse-health-operator --no-cache
-```
-
-## Cache behavior
+## Cache Behavior
 
 - Backend: DuckDB
 - Default path: `${XDG_CACHE_HOME:-~/.cache}/lakehouse-health-analyzer/catalog-overview.duckdb`
 - Default TTL: 900 seconds (15 minutes)
 - Expired, missing, or unreadable cache entries are treated as misses
+- Stale fallback is allowed only within the configured TTL. After TTL expiry,
+  fresh failures are surfaced instead of showing old cached results.
+- Catalog listing cache status is separate from per-table analysis cache status:
+  a cached table listing does not make every table row display `CACHED`.
+- Operator-facing cached or stale values are visibly marked and refreshable.
 
-## Export workflow
+## Export Workflow
 
-Enable exports through output policy environment variables:
+Enable default export destinations through output policy environment variables:
 
 ```bash
 export LHA_EXPORT_FORMATS=json,markdown
 export LHA_EXPORT_DIRECTORY=/tmp/lha-exports
-uv run lakehouse-health-operator --inspect sales.orders
+uv run lakehouse-health-operator report sales.orders --format json,markdown
 ```
 
 Exports are written as:
@@ -162,7 +220,21 @@ For example, `sales.orders` exports to `sales-orders.json` and `sales-orders.md`
 
 JSON preserves the canonical report structure. Markdown is a readable summary with source, cache/analyzed metadata, health metrics, warnings, and recommendation summaries.
 
-`LHA_EXPORT_DIRECTORY` must already exist.
+`LHA_EXPORT_DIRECTORY` must already exist. You can also pass an explicit output
+path or output directory:
+
+```bash
+lh report sales.orders --format json
+lh report sales.orders --format markdown
+lh report sales.curated.orders --format json
+lh report sales.orders --format json --output /tmp/sales-orders.json
+lh report sales.orders --format json,markdown --output-dir /tmp/lha-exports
+```
+
+The final identifier segment is the table name; earlier segments make up the
+catalog namespace. The report command prints JSON or Markdown to stdout
+by default, and writes a file only when an explicit output path or configured
+output policy requests it.
 
 ## Recommendation workflow
 

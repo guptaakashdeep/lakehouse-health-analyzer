@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from pydantic import BaseModel
 
@@ -40,4 +40,4 @@ class BaseCatalog(ABC):
     @abstractmethod
     def get_table_properties(self, database: str, table: str) -> Dict[str, str]:
         """Get table properties from the catalog."""
-        pass 
+        pass
