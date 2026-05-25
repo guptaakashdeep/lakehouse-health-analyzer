@@ -7,10 +7,6 @@ lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and operator TUI
 modernization notes live in
 [docs/operator-tui-modernization.md](docs/operator-tui-modernization.md).
 
-## Demo
-
-![Lakehouse Health Analyzer Demo](docs/resources/Lakehouse-analyzer.gif)
-
 ## Scope in this version
 
 - Table format: Apache Iceberg
