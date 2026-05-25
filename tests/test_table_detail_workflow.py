@@ -1,5 +1,5 @@
 import time
-from threading import Event
+from threading import Event, Lock
 
 from analysis.report import (
     CalculationWarning,
@@ -12,7 +12,11 @@ from analysis.report import (
     TableHealthReport,
     TableSource,
 )
-from configuration import AnalyzerConfiguration, GlueCatalogTableSourceConfiguration
+from configuration import (
+    AnalyzerConfiguration,
+    GlueCatalogTableSourceConfiguration,
+    RuntimePolicy,
+)
 from workflows.catalog_browser import CatalogTableRow, TableFormatClassification
 from workflows.errors import UnsupportedTableError
 from workflows.table_detail import TableDetailWorkflow
@@ -60,6 +64,50 @@ def test_selected_table_analysis_returns_loading_task_before_report_is_ready():
 
     release_analysis.set()
     assert task.result(timeout=1).report.table_name == "sales.orders"
+
+
+def test_table_detail_workflow_respects_runtime_max_concurrency():
+    first_started = Event()
+    second_started = Event()
+    release_analysis = Event()
+    started_tables = []
+    lock = Lock()
+
+    def analyze_config(config):
+        with lock:
+            started_tables.append(config.table_source.table_name)
+            started_count = len(started_tables)
+        if started_count == 1:
+            first_started.set()
+        elif started_count == 2:
+            second_started.set()
+        release_analysis.wait(1)
+        return _report(f"sales.{config.table_source.table_name}")
+
+    workflow = TableDetailWorkflow(
+        base_config=AnalyzerConfiguration(
+            table_source=GlueCatalogTableSourceConfiguration(
+                catalog_name="analytics",
+                namespace=("sales",),
+                table_name="__placeholder__",
+            ),
+            runtime=RuntimePolicy(max_concurrency=2),
+        ),
+        analyze_config=analyze_config,
+    )
+
+    first = workflow.select_table(_table_row("orders"))
+    second = workflow.select_table(_table_row("customers"))
+
+    try:
+        assert first_started.wait(0.2)
+        assert second_started.wait(0.2)
+    finally:
+        release_analysis.set()
+
+    assert first.result(timeout=1).report.table_name == "sales.orders"
+    assert second.result(timeout=1).report.table_name == "sales.customers"
+    assert set(started_tables) == {"orders", "customers"}
 
 
 def test_successful_selected_table_analysis_promotes_classification_to_iceberg():

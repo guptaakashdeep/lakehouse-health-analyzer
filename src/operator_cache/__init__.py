@@ -165,7 +165,7 @@ class OperatorCache:
         self, table_identifier: str
     ) -> CachedTableClassification | None:
         cached = self._read_table_classification(table_identifier)
-        if cached is None:
+        if cached is None or self._is_expired(cached.cached_at):
             return None
         return replace(cached, cache_status="stale")
 
@@ -218,7 +218,7 @@ class OperatorCache:
         self, scope_key: str
     ) -> CatalogNamespaceListing | None:
         cached = self._read_namespace_listing(scope_key)
-        if cached is None:
+        if cached is None or self._is_expired(cached.last_refreshed_at):
             return None
         return replace(cached, cache_status="stale")
 
@@ -275,7 +275,7 @@ class OperatorCache:
         self, scope_key: str, namespace: tuple[str, ...]
     ) -> CatalogTableListing | None:
         cached = self._read_table_listing(scope_key, namespace)
-        if cached is None:
+        if cached is None or self._is_expired(cached.last_refreshed_at):
             return None
         return replace(
             cached,
@@ -339,7 +339,7 @@ class OperatorCache:
         self, table_identifier: str
     ) -> TableDetailResult | None:
         cached = self._read_table_detail_report(table_identifier)
-        if cached is None:
+        if cached is None or self._is_expired(cached.cached_at):
             return None
         return replace(cached.result, cache_status="stale")
 

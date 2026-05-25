@@ -155,7 +155,4 @@ def test_operator_cache_caches_table_classification_until_ttl_expires(tmp_path):
     current_time = written_at + timedelta(seconds=61)
 
     assert cache.read_table_classification("analytics:sales.orders") is None
-    assert (
-        cache.read_stale_table_classification("analytics:sales.orders").cache_status
-        == "stale"
-    )
+    assert cache.read_stale_table_classification("analytics:sales.orders") is None

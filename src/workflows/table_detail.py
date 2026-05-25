@@ -142,9 +142,13 @@ class TableDetailWorkflow:
         analyze_iceberg_table
     )
     cache: TableDetailCache | None = None
-    _executor: ThreadPoolExecutor = field(
-        default_factory=lambda: ThreadPoolExecutor(max_workers=1), repr=False
-    )
+    _executor: ThreadPoolExecutor | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=max(1, self.base_config.runtime.max_concurrency)
+            )
 
     def highlight_table(self, table: CatalogTableRow) -> HighlightedTableDetail:
         return HighlightedTableDetail(table=table)
@@ -164,6 +168,8 @@ class TableDetailWorkflow:
                     cache_status=cached_result.cache_status,
                 )
         config = _config_for_table(self.base_config, table)
+        if self._executor is None:  # pragma: no cover - initialized in __post_init__
+            raise RuntimeError("Table detail executor is not configured.")
         future = self._executor.submit(_analyze_selected_table, self, table, config)
         return TableDetailAnalysisTask(table=table, _future=future)
 

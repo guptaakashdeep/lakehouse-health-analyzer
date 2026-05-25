@@ -38,6 +38,7 @@ from .rendering import (
     render_export_success,
     render_header_chrome,
     render_report_detail,
+    report_has_no_data,
     render_unsupported_detail,
     render_warning_state,
 )
@@ -467,6 +468,7 @@ class OperatorCatalogBrowserApp(App[None]):
         self.loading_namespaces = False
         self.loading_tables = False
         self.analysis_calls = 0
+        self.analysis_tasks_by_table: dict[str, asyncio.Task[None]] = {}
         self.layout_state: LayoutState = layout_state_for_size(80, 24)
 
     def compose(self) -> ComposeResult:
@@ -651,7 +653,7 @@ class OperatorCatalogBrowserApp(App[None]):
             )
             self.tables_by_namespace[self.selected_namespace] = tables
             self.freshness = listing.cache_status
-            await self._render_tables()
+            await self._render_tables(preserve_highlight=refresh)
             if listing.failures:
                 self.query_one("#detail-panel", Static).update(
                     render_warning_state(
@@ -682,14 +684,30 @@ class OperatorCatalogBrowserApp(App[None]):
         self.loading_tables = False
         self._refresh_chrome()
 
-    async def _render_tables(self) -> None:
+    async def _render_tables(self, *, preserve_highlight: bool = True) -> None:
         list_view = self.query_one("#table-list", ListView)
+        previous_index = list_view.index
+        previous_identifier = None
+        if preserve_highlight and isinstance(
+            list_view.highlighted_child, TableListItem
+        ):
+            previous_identifier = list_view.highlighted_child.table.identifier
+        selected_identifier = (
+            self._selected_table_identifier() if preserve_highlight else None
+        )
+
         await list_view.clear()
         tables = self._current_tables()
         for table in tables:
             await list_view.append(TableListItem(table))
         if tables:
-            list_view.index = 0
+            identifiers = tuple(table.identifier for table in tables)
+            list_view.index = _restored_table_index(
+                identifiers,
+                previous_identifier=previous_identifier,
+                selected_identifier=selected_identifier,
+                previous_index=previous_index,
+            )
         self._refresh_chrome()
 
     def _current_tables(self) -> tuple[CatalogTable, ...]:
@@ -740,6 +758,8 @@ class OperatorCatalogBrowserApp(App[None]):
     async def _select_table(self, item: TableListItem) -> None:
         self.active_panel = "tables"
         self.selected_table = item.table
+        self.selected_report = None
+        self.selected_report_result = None
         self.export_prompt_active = False
         if item.table.table_format == "NON-ICEBERG":
             self.query_one("#detail-panel", Static).update(
@@ -747,13 +767,34 @@ class OperatorCatalogBrowserApp(App[None]):
             )
             self._refresh_chrome()
             return
-        await self._analyze_selected_table(item.table)
+        self._start_table_analysis(item.table)
+
+    def _start_table_analysis(
+        self, table: CatalogTable, *, refresh: bool = False
+    ) -> None:
+        existing_task = self.analysis_tasks_by_table.get(table.identifier)
+        if existing_task is not None and not existing_task.done():
+            return
+        task = asyncio.create_task(
+            self._analyze_selected_table(table, refresh=refresh)
+        )
+        self.analysis_tasks_by_table[table.identifier] = task
+        task.add_done_callback(
+            lambda completed_task, table_identifier=table.identifier: (
+                self.analysis_tasks_by_table.pop(table_identifier, None)
+            )
+        )
 
     async def _analyze_selected_table(
         self, table: CatalogTable, *, refresh: bool = False
     ) -> None:
         self.analysis_calls += 1
         self.freshness = "loading"
+        analyzing = replace(table, freshness="analyzing")
+        self._replace_table(analyzing)
+        if self._selected_table_identifier() == table.identifier:
+            self.selected_table = analyzing
+        await self._render_tables()
         self.query_one("#detail-panel", Static).update(
             render_detail_state(
                 "Analyzing table",
@@ -773,10 +814,13 @@ class OperatorCatalogBrowserApp(App[None]):
             updated = replace(
                 table,
                 table_format="ICEBERG",
-                freshness=analysis_result.cache_status,
+                freshness=_successful_analysis_row_status(
+                    report,
+                    cache_status=analysis_result.cache_status,
+                ),
             )
             self._replace_table(updated)
-            self.freshness = "fresh"
+            self.freshness = analysis_result.cache_status
             await self._render_tables()
             if self._selected_table_identifier() == table.identifier:
                 self.selected_table = updated
@@ -803,8 +847,12 @@ class OperatorCatalogBrowserApp(App[None]):
                     render_unsupported_detail(table.identifier, message=str(exc))
                 )
         except Exception as exc:
-            self.freshness = "fresh"
+            updated = replace(table, freshness="error")
+            self._replace_table(updated)
+            self.freshness = "error"
+            await self._render_tables()
             if self._selected_table_identifier() == table.identifier:
+                self.selected_table = updated
                 self.selected_report = None
                 self.selected_report_result = None
                 self.export_prompt_active = False
@@ -818,10 +866,11 @@ class OperatorCatalogBrowserApp(App[None]):
         self._refresh_chrome()
 
     def _replace_table(self, updated: CatalogTable) -> None:
-        if self.selected_namespace is None:
+        namespace = updated.namespace or self.selected_namespace
+        if namespace is None:
             return
-        tables = self.tables_by_namespace.get(self.selected_namespace, ())
-        self.tables_by_namespace[self.selected_namespace] = tuple(
+        tables = self.tables_by_namespace.get(namespace, ())
+        self.tables_by_namespace[namespace] = tuple(
             updated if table.identifier == updated.identifier else table
             for table in tables
         )
@@ -898,7 +947,7 @@ class OperatorCatalogBrowserApp(App[None]):
             self.selected_report_result is not None
             or self.selected_table.table_format == "NON-ICEBERG"
         ):
-            await self._analyze_selected_table(self.selected_table, refresh=True)
+            self._start_table_analysis(self.selected_table, refresh=True)
         elif self.selected_namespace is not None:
             await self._load_tables_for_selected_namespace(refresh=True)
 
@@ -1121,6 +1170,29 @@ def _panel_label(panel: str) -> str:
     return "databases"
 
 
+def _successful_analysis_row_status(
+    report: TableHealthReport, *, cache_status: str
+) -> str:
+    if report_has_no_data(report):
+        return "no data"
+    return cache_status
+
+
+def _restored_table_index(
+    identifiers: tuple[str, ...],
+    *,
+    previous_identifier: str | None,
+    selected_identifier: str | None,
+    previous_index: int | None,
+) -> int:
+    for candidate in (previous_identifier, selected_identifier):
+        if candidate in identifiers:
+            return identifiers.index(candidate)
+    if previous_index is None:
+        return 0
+    return min(max(previous_index, 0), len(identifiers) - 1)
+
+
 class ConfiguredCatalogTableAccess:
     def __init__(self, config: AnalyzerConfiguration) -> None:
         table_source = config.table_source
@@ -1279,7 +1351,7 @@ def _catalog_table(
             name=raw_table.name,
             identifier=raw_table.identifier,
             table_format=str(raw_table.table_format),
-            freshness=raw_table.cache_status,
+            freshness=_table_row_freshness(raw_table),
         )
     if isinstance(raw_table, str):
         parts = tuple(part for part in raw_table.split(".") if part)
@@ -1299,6 +1371,15 @@ def _catalog_table(
         name=name,
         identifier=".".join(identifier_parts),
     )
+
+
+_LISTING_CLASSIFICATION_SOURCES = {"glue_parameters", "glue_metadata"}
+
+
+def _table_row_freshness(row: CatalogTableRow) -> str:
+    if row.classification_source in _LISTING_CLASSIFICATION_SOURCES:
+        return "not analyzed"
+    return row.cache_status
 
 
 def _catalog_table_row_for_identifier(table_identifier: str) -> CatalogTableRow:

@@ -121,6 +121,56 @@ def test_operator_catalog_browser_populates_tables_lazily_sorted_by_namespace():
     asyncio.run(run_app())
 
 
+def test_operator_catalog_browser_does_not_show_listing_cache_as_per_table_cache():
+    app = OperatorCatalogBrowserApp(
+        namespace_workflow=CatalogBrowserWorkflow(
+            FakeNamespaceAccess(namespaces=(CatalogNamespace(("sales",), "sales"),))
+        ),
+        table_access=FakeTableAccess(
+            tables={
+                ("sales",): CatalogTableListing(
+                    namespace=("sales",),
+                    rows=(
+                        CatalogTableRow(
+                            namespace=("sales",),
+                            name="analyzed",
+                            identifier="sales.analyzed",
+                            table_format=TableFormatClassification.ICEBERG,
+                            classification_source="analysis",
+                            cache_status="cached",
+                        ),
+                        CatalogTableRow(
+                            namespace=("sales",),
+                            name="glue_listed",
+                            identifier="sales.glue_listed",
+                            table_format=TableFormatClassification.ICEBERG,
+                            classification_source="glue_parameters",
+                            cache_status="cached",
+                        ),
+                    ),
+                    cache_status="cached",
+                )
+            }
+        ),
+    )
+
+    async def run_app():
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+            rows = {
+                item.table.name: _widget_text(item)
+                for item in app.query_one("#table-list", ListView).children
+            }
+            assert "CACHED" in rows["analyzed"]
+            assert "NOT ANALYZED" in rows["glue_listed"]
+            assert "CACHED" not in rows["glue_listed"]
+
+    asyncio.run(run_app())
+
+
 def test_operator_catalog_browser_filter_applies_to_active_panel_and_escape_clears():
     app = OperatorCatalogBrowserApp(
         namespace_workflow=CatalogBrowserWorkflow(
@@ -193,6 +243,243 @@ def test_operator_catalog_browser_highlight_does_not_analyze_until_enter():
             assert "RECOMMENDATIONS" in detail
             assert "FILES" in detail
             assert _table_formats(app) == ["UNKNOWN", "ICEBERG"]
+
+    asyncio.run(run_app())
+
+
+def test_operator_catalog_browser_analysis_runs_in_background_and_marks_row_analyzing():
+    started = Event()
+    release = Event()
+    table_access = FakeTableAccess(
+        tables={
+            ("sales",): (
+                CatalogTable(("sales",), "slow", "sales.slow"),
+                CatalogTable(("sales",), "z_other", "sales.z_other"),
+            )
+        },
+        analyze_results={"sales.slow": (started, release)},
+    )
+    app = OperatorCatalogBrowserApp(
+        namespace_workflow=CatalogBrowserWorkflow(
+            FakeNamespaceAccess(namespaces=(CatalogNamespace(("sales",), "sales"),))
+        ),
+        table_access=table_access,
+    )
+
+    async def run_app():
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+            analysis_press = asyncio.create_task(pilot.press("enter"))
+            assert await asyncio.to_thread(started.wait, 1)
+
+            try:
+                assert table_access.analyze_calls == [("sales.slow", False)]
+                assert "ANALYZING" in _text(app, "#table-list")
+
+                await pilot.press("j")
+                assert app.query_one("#table-list", ListView).index == 1
+            finally:
+                release.set()
+                await analysis_press
+
+    asyncio.run(run_app())
+
+
+def test_operator_catalog_browser_preserves_table_highlight_after_analysis_completes():
+    started = Event()
+    release = Event()
+    table_access = FakeTableAccess(
+        tables={
+            ("sales",): (
+                CatalogTable(("sales",), "alpha", "sales.alpha"),
+                CatalogTable(("sales",), "bravo", "sales.bravo"),
+                CatalogTable(("sales",), "charlie", "sales.charlie"),
+            )
+        },
+        analyze_results={"sales.charlie": (started, release)},
+    )
+    app = OperatorCatalogBrowserApp(
+        namespace_workflow=CatalogBrowserWorkflow(
+            FakeNamespaceAccess(namespaces=(CatalogNamespace(("sales",), "sales"),))
+        ),
+        table_access=table_access,
+    )
+
+    async def run_app():
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+            await pilot.press("j")
+            await pilot.press("j")
+
+            await pilot.press("enter")
+            assert await asyncio.to_thread(started.wait, 1)
+
+            try:
+                assert app.query_one("#table-list", ListView).index == 2
+                release.set()
+                await pilot.pause(0.05)
+
+                assert app.query_one("#table-list", ListView).index == 2
+                assert app.selected_table.identifier == "sales.charlie"
+                assert "sales.charlie" in _text(app, "#detail-panel")
+            finally:
+                release.set()
+                await pilot.pause(0.05)
+
+    asyncio.run(run_app())
+
+
+def test_operator_catalog_browser_does_not_start_duplicate_analysis_for_in_flight_table():
+    started = Event()
+    release = Event()
+    table_access = FakeTableAccess(
+        tables={
+            ("sales",): (
+                CatalogTable(("sales",), "orders", "sales.orders"),
+            )
+        },
+        analyze_results={"sales.orders": (started, release)},
+    )
+    app = OperatorCatalogBrowserApp(
+        namespace_workflow=CatalogBrowserWorkflow(
+            FakeNamespaceAccess(namespaces=(CatalogNamespace(("sales",), "sales"),))
+        ),
+        table_access=table_access,
+    )
+
+    async def run_app():
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+            await pilot.press("enter")
+            assert await asyncio.to_thread(started.wait, 1)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+            assert table_access.analyze_calls == [("sales.orders", False)]
+
+            release.set()
+            await pilot.pause(0.05)
+
+    asyncio.run(run_app())
+
+
+def test_operator_catalog_browser_empty_iceberg_table_shows_no_data_state():
+    app = OperatorCatalogBrowserApp(
+        namespace_workflow=CatalogBrowserWorkflow(
+            FakeNamespaceAccess(namespaces=(CatalogNamespace(("sales",), "sales"),))
+        ),
+        table_access=FakeTableAccess(
+            tables={
+                ("sales",): (CatalogTable(("sales",), "empty", "sales.empty"),)
+            },
+            analyze_results={
+                "sales.empty": TableAnalysisResult(
+                    report=_empty_table_health_report("sales.empty"),
+                    cache_status="fresh",
+                )
+            },
+        ),
+    )
+
+    async def run_app():
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+            assert "empty ICEBERG NO DATA" in _text(app, "#table-list")
+            detail = _text(app, "#detail-panel")
+            assert "Table has no snapshots" in detail
+            assert "NO DATA" in detail
+            assert "Data File Count" not in detail
+
+    asyncio.run(run_app())
+
+
+def test_operator_catalog_browser_header_matches_stale_table_detail_result():
+    app = OperatorCatalogBrowserApp(
+        namespace_workflow=CatalogBrowserWorkflow(
+            FakeNamespaceAccess(namespaces=(CatalogNamespace(("sales",), "sales"),))
+        ),
+        table_access=FakeTableAccess(
+            tables={
+                ("sales",): (CatalogTable(("sales",), "orders", "sales.orders"),)
+            },
+            analyze_results={
+                "sales.orders": TableAnalysisResult(
+                    report=_table_health_report("sales.orders"),
+                    cache_status="stale",
+                )
+            },
+        ),
+    )
+
+    async def run_app():
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+            assert "STALE" in _text(app, "#table-list")
+            assert "STALE" in _text(app, "#catalog-header")
+
+    asyncio.run(run_app())
+
+
+def test_operator_catalog_browser_clears_previous_report_while_new_analysis_runs():
+    started = Event()
+    release = Event()
+    table_access = FakeTableAccess(
+        tables={
+            ("sales",): (
+                CatalogTable(("sales",), "first", "sales.first"),
+                CatalogTable(("sales",), "slow", "sales.slow"),
+            )
+        },
+        analyze_results={"sales.slow": (started, release)},
+    )
+    app = OperatorCatalogBrowserApp(
+        namespace_workflow=CatalogBrowserWorkflow(
+            FakeNamespaceAccess(namespaces=(CatalogNamespace(("sales",), "sales"),))
+        ),
+        table_access=table_access,
+    )
+
+    async def run_app():
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+            assert "sales.first" in _text(app, "#detail-panel")
+
+            await pilot.press("j")
+            await pilot.press("enter")
+            assert await asyncio.to_thread(started.wait, 1)
+
+            try:
+                await pilot.press("e")
+                await pilot.pause(0.05)
+                detail = _text(app, "#detail-panel")
+                assert "Export unavailable" in detail
+                assert "sales.first" not in detail
+            finally:
+                release.set()
+                await pilot.pause(0.05)
 
     asyncio.run(run_app())
 
@@ -449,6 +736,9 @@ def test_operator_catalog_browser_analysis_failure_stays_recoverable_and_ui_usab
 
             assert "Unable to analyze sales.orders" in _text(app, "#detail-panel")
             assert "catalog temporarily unavailable" in _text(app, "#detail-panel")
+            assert "ERROR" in _text(app, "#catalog-header")
+            assert "orders UNKNOWN ERROR" in _text(app, "#table-list")
+            assert "orders UNKNOWN ANALYZING" not in _text(app, "#table-list")
             assert _table_formats(app) == ["UNKNOWN", "UNKNOWN"]
 
             await pilot.press("k")
@@ -671,23 +961,81 @@ def test_operator_catalog_browser_ignores_stale_analysis_after_selection_changes
             await pilot.press("enter")
             await pilot.pause(0.05)
 
-            tables_by_name = {
-                table.name: table for table in app.tables_by_namespace[("sales",)]
-            }
-            slow = tables_by_name["slow"]
-            current = tables_by_name["current"]
-            app.selected_table = slow
-            analysis = asyncio.create_task(app._analyze_selected_table(slow))
-            await asyncio.to_thread(started.wait, 1)
-            app.selected_table = current
-            app.query_one("#detail-panel", Static).update("Current selection")
+            await pilot.press("j")
+            await pilot.press("enter")
+            assert await asyncio.to_thread(started.wait, 1)
 
-            release.set()
-            await analysis
+            try:
+                await pilot.press("k")
+                await pilot.press("enter")
+                await pilot.pause(0.05)
 
-            assert app.selected_table.identifier == "sales.current"
-            assert "Current selection" in _text(app, "#detail-panel")
-            assert _table_formats(app) == ["UNKNOWN", "ICEBERG"]
+                assert app.selected_table.identifier == "sales.current"
+                assert "sales.current" in _text(app, "#detail-panel")
+
+                release.set()
+                await pilot.pause(0.05)
+
+                assert app.selected_table.identifier == "sales.current"
+                assert "sales.current" in _text(app, "#detail-panel")
+                assert _table_formats(app) == ["ICEBERG", "ICEBERG"]
+            finally:
+                release.set()
+
+    asyncio.run(run_app())
+
+
+def test_operator_catalog_browser_updates_background_analysis_for_original_namespace():
+    started = Event()
+    release = Event()
+    table_access = FakeTableAccess(
+        tables={
+            ("sales",): (CatalogTable(("sales",), "orders", "sales.orders"),),
+            ("finance",): (
+                CatalogTable(("finance",), "invoices", "finance.invoices"),
+            ),
+        },
+        analyze_results={"sales.orders": (started, release)},
+    )
+    app = OperatorCatalogBrowserApp(
+        namespace_workflow=CatalogBrowserWorkflow(
+            FakeNamespaceAccess(
+                namespaces=(
+                    CatalogNamespace(("sales",), "sales"),
+                    CatalogNamespace(("finance",), "finance"),
+                )
+            )
+        ),
+        table_access=table_access,
+    )
+
+    async def run_app():
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+            await pilot.press("enter")
+            assert await asyncio.to_thread(started.wait, 1)
+
+            try:
+                await pilot.press("left")
+                await pilot.press("j")
+                await pilot.press("enter")
+                await pilot.pause(0.05)
+
+                assert app.selected_namespace == ("finance",)
+                assert _table_names(app) == ["invoices"]
+
+                release.set()
+                await pilot.pause(0.05)
+
+                sales_table = app.tables_by_namespace[("sales",)][0]
+                assert sales_table.identifier == "sales.orders"
+                assert sales_table.table_format == "ICEBERG"
+                assert sales_table.freshness == "fresh"
+            finally:
+                release.set()
 
     asyncio.run(run_app())
 
@@ -846,6 +1194,45 @@ def _table_health_report(table_identifier: str) -> TableHealthReport:
                 label="Data File Count",
                 value=7,
                 unit="files",
+                source="test",
+            ),
+        ),
+        display_statistics=(),
+        table_evolution_history=TableEvolutionHistory(),
+    )
+
+
+def _empty_table_health_report(table_identifier: str) -> TableHealthReport:
+    return TableHealthReport(
+        table_name=table_identifier,
+        table_source=TableSource(kind="glue_catalog_table", location=table_identifier),
+        health_metrics=(
+            HealthMetric(
+                key="data_file_count",
+                label="Data File Count",
+                value=0,
+                unit="files",
+                source="test",
+            ),
+            HealthMetric(
+                key="delete_file_count",
+                label="Delete File Count",
+                value=0,
+                unit="files",
+                source="test",
+            ),
+            HealthMetric(
+                key="valid_snapshot_count",
+                label="Valid Snapshot Count",
+                value=0,
+                unit="snapshots",
+                source="test",
+            ),
+            HealthMetric(
+                key="expirable_snapshot_candidate_count",
+                label="Expirable Snapshot Candidate Count",
+                value=0,
+                unit="snapshots",
                 source="test",
             ),
         ),

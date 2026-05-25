@@ -94,6 +94,8 @@ def render_report_detail(
     *,
     cache_status: str = "fresh",
 ) -> RenderableType:
+    if report_has_no_data(report):
+        return _no_data_report_detail(report, cache_status=cache_status)
     detail_view = table_detail_view(report)
     recommendations = detail_view.section("recommendations").items
     warnings = detail_view.section("warnings").items
@@ -117,6 +119,21 @@ def render_report_detail(
     group = Group(*panels)
     group.spans = _panel_text_spans(panels)  # type: ignore[attr-defined]
     return group
+
+
+def report_has_no_data(report: TableHealthReport) -> bool:
+    return (
+        _health_metric_value(report, "valid_snapshot_count") == 0
+        and _health_metric_value(report, "data_file_count") == 0
+        and _health_metric_value(report, "delete_file_count") == 0
+    )
+
+
+def _health_metric_value(report: TableHealthReport, key: str) -> object:
+    try:
+        return report.health_metric(key).value
+    except KeyError:
+        return None
 
 
 def render_detail_state(
@@ -172,6 +189,35 @@ def _panel_text_spans(panels: Sequence[RenderableType]) -> tuple[object, ...]:
         if isinstance(renderable, Text):
             spans.extend(renderable.spans)
     return tuple(spans)
+
+
+def _no_data_report_detail(
+    report: TableHealthReport,
+    *,
+    cache_status: str,
+) -> RenderableType:
+    body = Text()
+    body.append(report.table_name, style=f"bold {TEXT}")
+    body.append("  ")
+    body.append(_badge("ICEBERG"))
+    body.append("  ")
+    body.append(_badge("NO DATA"))
+    body.append("  ")
+    body.append(_badge(cache_status))
+    body.append("\n")
+    body.append("Table has no snapshots.", style=f"bold {TEXT_SOFT}")
+    body.append("\n")
+    body.append(
+        "This is a valid Iceberg table, but no snapshot-backed data files "
+        "are available to analyze yet.",
+        style=TEXT_SOFT,
+    )
+    return _framed(
+        body,
+        title="TABLE SUMMARY",
+        border_style=CYAN,
+        padding=(0, 1),
+    )
 
 
 def _summary_panel(

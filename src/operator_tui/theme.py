@@ -32,11 +32,13 @@ _ALIASES = {
     "failed": "critical",
     "non-iceberg": "critical",
     "setup-needed": "warning",
+    "analyzing": "info",
     "refreshing": "info",
     "loading": "info",
     "fresh": "healthy",
     "iceberg": "healthy",
     "loaded": "healthy",
+    "no-data": "unknown",
     "not-analyzed": "unknown",
 }
 

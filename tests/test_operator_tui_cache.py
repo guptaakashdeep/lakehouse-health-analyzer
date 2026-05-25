@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from threading import Event
 
+import pytest
+
 from analysis.report import HealthMetric, TableHealthReport, TableSource
 from configuration import AnalyzerConfiguration, GlueCatalogTableSourceConfiguration
 from operator_cache import OperatorCache
@@ -87,6 +89,7 @@ def test_cached_table_listing_does_not_extend_expired_classification_ttl(tmp_pat
     assert cached_listing.rows[0].table_format == TableFormatClassification.UNKNOWN
     assert cached_listing.rows[0].classification_source == "glue_parameters"
     assert access.requested_table_namespaces == [("sales",)]
+    assert cache.read_stale_table_classification("sales.orders") is None
 
 
 def test_catalog_browser_workflow_does_not_reuse_cached_namespace_failures(tmp_path):
@@ -268,6 +271,61 @@ def test_catalog_browser_namespace_refresh_failure_returns_stale_cached_listing(
     assert listing.namespaces[0].display_name == "sales"
 
 
+def test_catalog_browser_namespace_refresh_failure_does_not_use_expired_stale_listing(
+    tmp_path,
+):
+    written_at = datetime(2026, 5, 21, 8, 30, tzinfo=timezone.utc)
+    current_time = written_at
+    cache = OperatorCache(
+        tmp_path / "operator-cache.duckdb",
+        ttl_seconds=60,
+        now=lambda: current_time,
+    )
+    cache.write_namespace_listing(
+        "analytics",
+        CatalogNamespaceListing(
+            namespaces=(CatalogNamespace(name=("sales",), display_name="sales"),)
+        ),
+    )
+    workflow = CatalogBrowserWorkflow(
+        catalog_access=FailingCatalogAccess("glue is unavailable"),
+        cache=cache,
+        cache_scope_key="analytics",
+    )
+
+    current_time = written_at + timedelta(seconds=61)
+
+    with pytest.raises(RuntimeError, match="glue is unavailable"):
+        workflow.list_namespaces(refresh=True)
+
+
+def test_catalog_browser_table_refresh_failure_does_not_use_expired_stale_listing(
+    tmp_path,
+):
+    written_at = datetime(2026, 5, 21, 8, 30, tzinfo=timezone.utc)
+    current_time = written_at
+    cache = OperatorCache(
+        tmp_path / "operator-cache.duckdb",
+        ttl_seconds=60,
+        now=lambda: current_time,
+    )
+    cache.write_table_listing(
+        "analytics",
+        ("sales",),
+        CatalogTableListing(namespace=("sales",), rows=(_table_row("orders"),)),
+    )
+    workflow = CatalogBrowserWorkflow(
+        catalog_access=FailingCatalogAccess("glue is unavailable"),
+        cache=cache,
+        cache_scope_key="analytics",
+    )
+
+    current_time = written_at + timedelta(seconds=61)
+
+    with pytest.raises(RuntimeError, match="glue is unavailable"):
+        workflow.list_tables(("sales",), refresh=True)
+
+
 def test_catalog_browser_namespace_refresh_preserves_table_cache(tmp_path):
     cache = OperatorCache(tmp_path / "operator-cache.duckdb")
     cache.write_table_listing(
@@ -345,7 +403,40 @@ def test_operator_cache_caches_table_detail_report_until_ttl_expires(tmp_path):
     current_time = written_at + timedelta(seconds=61)
 
     assert cache.read_table_detail_report("sales.orders") is None
-    assert cache.read_stale_table_detail_report("sales.orders").cache_status == "stale"
+    assert cache.read_stale_table_detail_report("sales.orders") is None
+
+
+def test_table_detail_refresh_failure_does_not_use_expired_stale_cached_report(
+    tmp_path,
+):
+    written_at = datetime(2026, 5, 21, 8, 30, tzinfo=timezone.utc)
+    current_time = written_at
+    cache = OperatorCache(
+        tmp_path / "operator-cache.duckdb",
+        ttl_seconds=60,
+        now=lambda: current_time,
+    )
+    workflow = TableDetailWorkflow(
+        base_config=_base_config(),
+        analyze_config=lambda config: _report("sales.orders"),
+        cache=cache,
+    )
+    table = _table_row("orders")
+    workflow.select_table(table).result(timeout=1)
+
+    current_time = written_at + timedelta(seconds=61)
+    failing_workflow = TableDetailWorkflow(
+        base_config=_base_config(),
+        analyze_config=lambda config: (_ for _ in ()).throw(RuntimeError("glue down")),
+        cache=cache,
+    )
+
+    result = failing_workflow.select_table(table, refresh=True).result(timeout=1)
+
+    assert result.analysis_status == "error"
+    assert result.cache_status == "fresh"
+    assert result.message == "glue down"
+    assert result.report is None
 
 
 def test_table_detail_refresh_failure_preserves_stale_cached_report(tmp_path):

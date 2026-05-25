@@ -257,6 +257,42 @@ def test_partitioned_metadata_file_analysis_reports_skewed_partition_distributio
     assert report.health_metric("partition_size_skewness").value > 0.8
 
 
+def test_empty_iceberg_table_without_snapshot_reports_no_data_metrics():
+    no_snapshot_message = "Cannot get the snapshot as the table doesn't have any"
+
+    class NoSnapshotInspect:
+        def files(self):
+            raise ValueError(no_snapshot_message)
+
+        def partitions(self):
+            raise ValueError(no_snapshot_message)
+
+        def snapshots(self):
+            raise ValueError(no_snapshot_message)
+
+    table = FakeIcebergTable(("warehouse", "sales", "empty_orders"), [])
+    table.inspect = NoSnapshotInspect()
+
+    def current_snapshot():
+        raise ValueError(no_snapshot_message)
+
+    table.current_snapshot = current_snapshot
+
+    with patch("analysis.iceberg._load_static_table", return_value=table):
+        report = analyze_iceberg_metadata_file("/tmp/empty_orders.metadata.json")
+
+    assert report.table_name == "warehouse.sales.empty_orders"
+    assert report.health_metric("data_file_count").value == 0
+    assert report.health_metric("delete_file_count").value == 0
+    assert report.health_metric("total_file_size_bytes").value == 0
+    assert report.health_metric("data_file_size_bytes").value == 0
+    assert report.health_metric("data_file_record_count").value == 0
+    assert report.health_metric("partition_count").value == 0
+    assert report.health_metric("valid_snapshot_count").value == 0
+    assert report.health_metric("expirable_snapshot_candidate_count").value == 0
+    assert report.display_statistic("total_file_size").value == "0 B"
+
+
 def test_empty_partition_metadata_reports_zero_partition_totals():
     table = FakeIcebergTable(
         ("warehouse", "sales", "orders"),
