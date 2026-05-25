@@ -2,8 +2,9 @@
 
 Analyze Apache Iceberg table metadata through one canonical `TableHealthReport` model shared by Streamlit, terminal workflows, and exports.
 
-Architecture decisions live in [docs/adr](docs/adr), and the current operator
-TUI modernization notes live in
+Architecture decisions live in [docs/adr](docs/adr), the current component map
+lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and operator TUI
+modernization notes live in
 [docs/operator-tui-modernization.md](docs/operator-tui-modernization.md).
 
 ## Demo
@@ -15,10 +16,12 @@ TUI modernization notes live in
 - Table format: Apache Iceberg
 - Table sources:
   - Metadata file source (`metadata.json` path)
-  - AWS Glue catalog table source (`pyiceberg` Glue catalog loading)
+  - AWS Glue catalog table source (Boto3 for lightweight browsing, PyIceberg
+    for explicit table analysis)
 - Interfaces:
   - Streamlit dashboard (`streamlit_app.py`)
-  - Operator terminal workflow (`lakehouse-health-operator`)
+  - Operator Textual TUI (`lh` / `lakehouse-health-operator`)
+  - Non-interactive report command (`lh report`)
 - Outputs:
   - JSON structured report exports
   - Markdown summary report exports
@@ -35,29 +38,13 @@ Out of scope for this version:
 
 ## Architecture (current implementation)
 
-```mermaid
-flowchart TD
-    M["Metadata File<br/>metadata.json path"]
-    G["AWS Glue Catalog<br/>PyIceberg table loading"]
-    C["AnalyzerConfiguration.from_environment<br/>centralized runtime and config policy"]
-    A["Analysis Core<br/>canonical TableHealthReport"]
-    D["DuckDB Cache<br/>catalog overview cache"]
-    S["Streamlit Dashboard<br/>overview table and metadata-file full report"]
-    O["Operator TUI and CLI<br/>lh / report"]
-    J["JSON Export"]
-    MD["Markdown Export"]
+The calculation layer is `analysis.iceberg`, and the shared report shape is
+`analysis.report.TableHealthReport`. UI-neutral workflows in `src/workflows/`
+orchestrate catalog browsing, selected-table analysis, setup, and report
+exports. Interface layers render those shared workflows through the Textual TUI,
+Streamlit, and JSON/Markdown exports.
 
-    M --> C
-    G --> C
-    C --> A
-    A --> D
-    A --> S
-    D --> S
-    A --> O
-    D --> O
-    O --> J
-    O --> MD
-```
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current Mermaid component map.
 
 ## Development workflow
 
@@ -122,11 +109,14 @@ Required for metadata-file analysis:
 
 - `LHA_METADATA_LOCATION`
 
-Required for Glue catalog-table analysis:
+Required for Glue catalog browsing and `lh report`:
 
 - `LHA_TABLE_SOURCE_KIND=glue_catalog_table`
 - `LHA_GLUE_CATALOG_NAME`
-- `LHA_GLUE_NAMESPACE` (the Glue database; dot-separated for operator/table analysis; Streamlit catalog overview currently supports a single namespace component)
+
+Optional for direct single-table analysis paths:
+
+- `LHA_GLUE_NAMESPACE` (the Glue database; dot-separated for nested namespaces)
 - `LHA_GLUE_TABLE_NAME`
 
 Optional policy and runtime settings:
@@ -178,17 +168,19 @@ From a source checkout without installing, prefix commands with `uv run`:
 uv run lh
 ```
 
-Example environment for Glue catalog workflow:
+Example environment for Glue catalog workflow without running setup:
 
 ```bash
 export LHA_TABLE_SOURCE_KIND=glue_catalog_table
 export LHA_GLUE_CATALOG_NAME=analytics
-export LHA_GLUE_NAMESPACE=sales
-export LHA_GLUE_TABLE_NAME=orders
+export LHA_AWS_PROFILE=dev        # optional
+export LHA_AWS_REGION=us-east-1   # optional when your AWS config supplies it
 ```
 
 In the TUI you can browse catalog namespaces, load tables, analyze a selected
-table, refresh visible catalog/table data, and export the selected report.
+table in the background, continue navigating while analysis runs, refresh visible
+catalog/table data, and export the selected report. Empty Iceberg tables with no
+snapshots are shown as `NO DATA`; genuine analysis failures are shown as `ERROR`.
 
 Generate non-interactive reports with the explicit `report` subcommand:
 
@@ -207,8 +199,11 @@ Interactive TUI behavior, layout, styling, and key bindings are captured in
 - Default path: `${XDG_CACHE_HOME:-~/.cache}/lakehouse-health-analyzer/catalog-overview.duckdb`
 - Default TTL: 900 seconds (15 minutes)
 - Expired, missing, or unreadable cache entries are treated as misses
-- Operator-facing values may be cached when they are visibly marked as cached
-  and refreshable.
+- Stale fallback is allowed only within the configured TTL. After TTL expiry,
+  fresh failures are surfaced instead of showing old cached results.
+- Catalog listing cache status is separate from per-table analysis cache status:
+  a cached table listing does not make every table row display `CACHED`.
+- Operator-facing cached or stale values are visibly marked and refreshable.
 
 ## Export Workflow
 
@@ -242,7 +237,7 @@ lh report sales.orders --format json,markdown --output-dir /tmp/lha-exports
 
 The final identifier segment is the table name; earlier segments make up the
 catalog namespace. The report command prints JSON or Markdown to stdout
-by default, and write a file only when an explicit output path or configured
+by default, and writes a file only when an explicit output path or configured
 output policy requests it.
 
 ## Recommendation workflow
